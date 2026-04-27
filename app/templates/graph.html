@@ -1,0 +1,125 @@
+{% extends "base.html" %}
+{% block title %}Taste Graph Explorer{% endblock %}
+{% block head %}
+<script src="https://unpkg.com/cytoscape@3.28.1/dist/cytoscape.min.js"></script>
+{% endblock %}
+{% block content %}
+<div class="graph-page">
+<section class="graph-shell">
+  <aside class="graph-controls">
+    <p class="eyebrow">Taste map</p>
+    <select id="clusterFilter">
+      <option value="">All clusters</option>
+    </select>
+    <label><span>Weirdness <b id="weirdnessValue">1</b></span><input id="weirdnessFilter" type="range" min="1" max="10" value="1"></label>
+    <label><span>Emotional weight <b id="emotionalValue">1</b></span><input id="emotionalFilter" type="range" min="1" max="10" value="1"></label>
+    <label><span>Johnny-core <b id="johnnyValue">1</b></span><input id="johnnyFilter" type="range" min="1" max="10" value="1"></label>
+    <label class="toggle-row"><input id="showPending" type="checkbox"> <span>Show pending titles</span></label>
+    <div class="control-actions">
+      <button id="resetView" class="button primary" type="button">Reset view</button>
+      <button id="fitCluster" class="button" type="button">Fit cluster</button>
+      <button id="focusSelected" class="button" type="button">Focus selected</button>
+      <button id="showFullMap" class="button" type="button">Show full map</button>
+      <button id="resetFilters" class="button" type="button">Reset filters</button>
+      <button id="compareToggle" class="button" type="button" aria-pressed="false">Compare mode</button>
+    </div>
+    <p id="graphMode" class="graph-mode-note">Browse the map, then click a title to pull its neighborhood into focus.</p>
+    <p id="resultCount" class="result-count">Showing 0 of 0 titles</p>
+  </aside>
+  <aside class="movie-browser">
+    <p class="eyebrow">Browse titles</p>
+    <div class="browser-tabs" role="tablist" aria-label="Title browser views">
+      <button id="mappedTab" class="browser-tab is-active" type="button" data-browser-mode="mapped" aria-pressed="true">Mapped</button>
+      <button id="outliersTab" class="browser-tab" type="button" data-browser-mode="outliers" aria-pressed="false">Outliers</button>
+    </div>
+    <div class="score-legend" aria-label="Score legend">
+      <span class="legend-item" title="How strongly this matches your core taste"><i class="legend-dot johnny"></i>Johnny-core</span>
+      <span class="legend-item" title="How unconventional or experimental it is"><i class="legend-dot weird"></i>Weirdness</span>
+      <span class="legend-item" title="How heavy or intense it feels"><i class="legend-dot emotion"></i>Emotional weight</span>
+    </div>
+    <input id="movieBrowserSearch" type="search" placeholder="Find a title">
+    <div id="movieBrowserList" class="movie-browser-list"></div>
+  </aside>
+  <div class="graph-stage">
+    <div class="graph-stage-toolbar">
+      <label class="label-mode-control is-hidden" for="labelMode" title="Adjust how many labels appear in full map mode" aria-hidden="true">
+        <span>Labels</span>
+        <select id="labelMode">
+          <option value="auto" selected>Auto labels</option>
+          <option value="more">More labels</option>
+          <option value="minimal">Minimal labels</option>
+        </select>
+      </label>
+      <button id="zoomOut" class="button" type="button" aria-label="Zoom out">-</button>
+      <button id="zoomIn" class="button" type="button" aria-label="Zoom in">+</button>
+      <button id="resetViewOverlay" class="button" type="button">Reset view</button>
+      <button id="focusSelectedOverlay" class="button" type="button">Focus selected</button>
+      <button id="showFullMapOverlay" class="button" type="button">Show full map</button>
+    </div>
+    <button id="exitFullMap" class="button full-map-exit is-hidden" type="button" hidden aria-hidden="true">Exit full map</button>
+    <div id="graphEntryPanel" class="graph-entry-panel" hidden>
+      <p class="eyebrow">Pick a starting point</p>
+      <h3>Start with a neighborhood, not the whole map.</h3>
+      <div class="graph-entry-actions">
+        <button type="button" data-entry-focus="top_johnny">Top Johnny-core</button>
+        <button type="button" data-entry-focus="most_weird">Most weird</button>
+        <button type="button" data-entry-focus="recent">Recently added</button>
+        <button type="button" data-entry-focus="random">Random</button>
+        <button type="button" data-entry-focus="full">Show full map</button>
+      </div>
+    </div>
+    <div id="cy"></div>
+    <div id="emptyGraph" class="empty-graph" hidden>
+      <p class="eyebrow">No graph data yet</p>
+      <h2>Seed a small taste map or sync Plex.</h2>
+      <ol>
+        <li><code>python3 scripts/seed_demo.py</code></li>
+        <li>Or <code>python3 scripts/sync_plex.py</code></li>
+      </ol>
+    </div>
+  </div>
+  <aside class="node-panel">
+    <div id="details" class="node-detail">
+      <p class="eyebrow">Taste context</p>
+      <h2>Explore the map</h2>
+      <p>Click a title for its neighborhood, taste signals, and nearby connections. Ask from here without leaving the map.</p>
+      <div class="panel-hint">
+        <strong>Default view</strong>
+        <span>Mapped enriched titles are shown in the graph by default. Outliers stay browseable in the list, but they do not appear on the map.</span>
+      </div>
+      <div class="panel-hint">
+        <strong>How to explore</strong>
+        <span>Use the browser list when you know what you want. Use the graph when you want to wander by vibe, cluster, and connection strength.</span>
+      </div>
+    </div>
+  </aside>
+</section>
+<section class="graph-ask">
+  <div class="graph-ask-bar">
+    <div>
+      <div class="suggestion-header">
+        <p class="eyebrow">Suggested asks</p>
+        <button id="refreshSuggestions" type="button">New prompts</button>
+      </div>
+      <div id="askPrompts" class="ask-prompts"></div>
+      <div id="selectedAskActions" class="selected-ask-actions" hidden></div>
+    </div>
+    <form id="graphAskForm" class="ask-input-panel">
+      <label for="graphAskQuestion">Ask about this map...</label>
+      <div class="ask-inline">
+        <textarea id="graphAskQuestion" rows="2" placeholder="Ask about this map..."></textarea>
+        <button id="graphAskButton" class="button primary" type="submit">Ask</button>
+      </div>
+      <div class="ask-actions-row">
+        <button id="resetAsk" class="button" type="button" disabled>Clear answer</button>
+      </div>
+      <p>Try a suggested ask, or ask about the selected neighborhood.</p>
+      <p class="ask-helper-line">Results will appear below after you ask.</p>
+      <p id="askStatus" class="ask-status" hidden>Checking your taste graph...</p>
+    </form>
+  </div>
+  <article id="graphAskAnswer" class="graph-ask-answer" aria-live="polite" hidden></article>
+</section>
+</div>
+<script src="/static/js/graph.js"></script>
+{% endblock %}

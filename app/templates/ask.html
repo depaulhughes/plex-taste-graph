@@ -1,0 +1,65 @@
+{% extends "base.html" %}
+{% block title %}Ask Taste Graph{% endblock %}
+{% block content %}
+<section class="ask-layout">
+  <div>
+    <p class="eyebrow">Taste Q&A</p>
+    <h1>Ask Taste Graph</h1>
+    <form id="askForm">
+      <textarea id="question" rows="5" placeholder="What should I watch next if I want something like Videodrome but more emotionally devastating?"></textarea>
+      <button class="button primary" type="submit">Ask</button>
+    </form>
+  </div>
+  <article id="answer" class="answer-panel">
+    <p>Recommendations will appear here.</p>
+  </article>
+</section>
+<script>
+const form = document.querySelector("#askForm");
+const answer = document.querySelector("#answer");
+const formatConfidence = (value) => `${Math.round(Number(value || 0) * 100)}%`;
+form.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const question = document.querySelector("#question").value.trim();
+  if (!question) return;
+  answer.innerHTML = "<p>Thinking through the graph...</p>";
+  const response = await fetch("/api/ask", {
+    method: "POST",
+    headers: {"Content-Type": "application/json"},
+    body: JSON.stringify({question})
+  });
+  const data = await response.json();
+  const scoreCircle = (kind, label, value) => {
+    const score = Number(value || 0);
+    return `<span class="score-circle ${kind}" style="--score: ${score}" title="${label}: ${score || "Pending"}"><b>${score || "-"}</b></span>`;
+  };
+  const scoreCircles = (scores = {}) => `
+    <div class="score-circles">
+      ${scoreCircle("johnny", "Johnny-core", scores.johnny_core)}
+      ${scoreCircle("weird", "Weirdness", scores.weirdness)}
+      ${scoreCircle("emotion", "Emotional weight", scores.emotional_weight)}
+    </div>
+  `;
+  const list = (items) => (items || []).map(item => {
+    if (typeof item === "string") return `<li>${item}</li>`;
+    const scores = item.scores || {};
+    return `<li><strong>${item.title}</strong> ${item.year ? `<span>${item.year}</span>` : ""}${item.confidence != null ? `<small>${formatConfidence(item.confidence)}</small>` : ""}${scoreCircles(scores)}<small>${item.cluster || ""}</small></li>`;
+  }).join("") || "<li>None listed</li>";
+  answer.innerHTML = `
+    <h2>${data.recommendation || "Taste Graph answer"}</h2>
+    <p>${data.why_these_fit || data.why_it_fits || ""}</p>
+    <h3>Best matches</h3>
+    <ul class="nearby-list">${list(data.best_matches || data.nearby_titles)}</ul>
+    <h3>Weirdest matches</h3>
+    <ul class="nearby-list">${list(data.weirdest_matches)}</ul>
+    <h3>Emotionally heavier matches</h3>
+    <ul class="nearby-list">${list(data.emotionally_heavier_matches)}</ul>
+    <h3>Safer / easier watches</h3>
+    <ul class="nearby-list">${list(data.safer_easier_watches)}</ul>
+    <h3>Tags driving the recommendation</h3>
+    <div class="tag-row">${(data.tags_driving_recommendation || data.tags_that_drove_answer || []).map(tag => `<em>${tag}</em>`).join("")}</div>
+    <small>Confidence: ${data.confidence != null ? formatConfidence(data.confidence) : "n/a"}</small>
+  `;
+});
+</script>
+{% endblock %}

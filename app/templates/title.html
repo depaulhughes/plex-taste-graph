@@ -1,0 +1,106 @@
+{% extends "base.html" %}
+{% block title %}{{ title.title }} | Taste Graph{% endblock %}
+{% macro confidence_percent(value) -%}
+  {{ ((value or 0) * 100)|round|int }}%
+{%- endmacro %}
+{% macro score_circle(kind, label, value) -%}
+  <span class="score-circle {{ kind }}" style="--score: {{ value or 0 }}" title="{{ label }}: {{ value or 'Pending' }}"><b>{{ value or "-" }}</b></span>
+{%- endmacro %}
+{% macro rec_list(items) -%}
+  <div class="mini-rec-list">
+    {% for item in items %}
+      <a href="/title/{{ item.id }}">
+        <strong>{{ item.title }}</strong>
+        <span>{{ item.year or "n/a" }} · {{ item.primary_cluster or "Outliers" }}</span>
+      </a>
+    {% else %}
+      <p>No nearby picks yet.</p>
+    {% endfor %}
+  </div>
+{%- endmacro %}
+{% block content %}
+<section class="title-detail title-detail-rich">
+  <div>
+    <p class="eyebrow">{{ title.type }} · {{ title.year or "Unknown year" }} · {{ title.source or "manual" }} · {{ title.enrichment_status or "pending" }}</p>
+    <h1>{{ title.title }}</h1>
+    <p class="summary">{{ title.summary or "No synopsis available." }}</p>
+    <div class="metadata-line">
+      {% if title.directors %}<span>Directed by {{ title.directors|join(", ") }}</span>{% endif %}
+      {% if title.genres %}<span>{{ title.genres|join(", ") }}</span>{% endif %}
+    </div>
+    {% if title.plex_url %}<a class="button" href="{{ title.plex_url }}" target="_blank" rel="noreferrer">Open in Plex</a>{% endif %}
+  </div>
+  <div class="detail-panel">
+    <p class="eyebrow">{{ title.primary_cluster }}</p>
+    <div class="score-circles large">
+      {{ score_circle("johnny", "Johnny-core", title.johnny_core_score) }}
+      {{ score_circle("weird", "Weirdness", title.weirdness_score) }}
+      {{ score_circle("emotion", "Emotional weight", title.emotional_weight_score) }}
+    </div>
+    <p>{{ title.closest_viewing_context or "Closest viewing context will appear after enrichment." }}</p>
+  </div>
+</section>
+
+{% if title.enrichment_status != "enriched" %}
+<section class="cluster-band">
+  <div class="empty-state">
+    <h2>This title is pending enrichment.</h2>
+    <p>Run the enrichment script to generate taste tags, scores, clusters, and graph relationships.</p>
+  </div>
+</section>
+{% endif %}
+
+<section class="two-column">
+  <div>
+    <h2>Taste profile</h2>
+    <p>{{ title.ai_summary or "This title is pending enrichment." }}</p>
+    {% if title.recommendation_hooks %}
+      <h3>Recommendation hooks</h3>
+      <div class="tag-row large">
+        {% for hook in title.recommendation_hooks %}
+          <em>{{ hook }}</em>
+        {% endfor %}
+      </div>
+    {% endif %}
+    <div class="tag-sections">
+      <div><h3>Tone</h3><div class="tag-row">{% for tag in title.tone_tags %}<em>{{ tag }}</em>{% else %}<span>Pending</span>{% endfor %}</div></div>
+      <div><h3>Themes</h3><div class="tag-row">{% for tag in title.theme_tags %}<em>{{ tag }}</em>{% else %}<span>Pending</span>{% endfor %}</div></div>
+      <div><h3>Style</h3><div class="tag-row">{% for tag in title.style_tags %}<em>{{ tag }}</em>{% else %}<span>Pending</span>{% endfor %}</div></div>
+      <div><h3>Mood</h3><div class="tag-row">{% for tag in title.mood_tags %}<em>{{ tag }}</em>{% else %}<span>Pending</span>{% endfor %}</div></div>
+    </div>
+  </div>
+  <div>
+    <h2>Graph neighbors</h2>
+    <h3>Strong matches</h3>
+    {% for edge in strong_edges %}
+      <a class="connection" href="/title/{{ edge.nearby_id }}">
+        <strong>{{ edge.nearby_title }}</strong>
+        <span>{{ confidence_percent(edge.confidence or edge.weight) }}</span>
+        <p>{{ edge.explanation }}</p>
+      </a>
+    {% else %}
+      <p>No strong taste neighbors yet.</p>
+    {% endfor %}
+    <h3>Soft matches</h3>
+    {% for edge in soft_edges %}
+      <a class="connection soft-match" href="/title/{{ edge.nearby_id }}">
+        <strong>{{ edge.nearby_title }}</strong>
+        <span>{{ confidence_percent(edge.confidence or edge.weight) }}</span>
+        <p>{{ edge.explanation }}</p>
+      </a>
+    {% else %}
+      <p>No soft bridges yet.</p>
+    {% endfor %}
+  </div>
+</section>
+
+<section class="cluster-band">
+  <h2>Recommendation map</h2>
+  <div class="recommendation-grid">
+    <div><h3>Closest matches</h3>{{ rec_list(recommendations.closest) }}</div>
+    <div><h3>Weirder nearby picks</h3>{{ rec_list(recommendations.weirder) }}</div>
+    <div><h3>Emotionally heavier</h3>{{ rec_list(recommendations.heavier) }}</div>
+    <div><h3>Safer / easier</h3>{{ rec_list(recommendations.safer) }}</div>
+  </div>
+</section>
+{% endblock %}

@@ -1,0 +1,225 @@
+{% extends "base.html" %}
+{% block title %}Taste Graph{% endblock %}
+{% block content %}
+{% set recent_titles = stats.recent_titles if stats.recent_titles is defined else [] %}
+{% set average_scores = stats.average_scores if stats.average_scores is defined else {} %}
+{% set top_signal_tags = stats.top_signal_tags if stats.top_signal_tags is defined else [] %}
+{% set top_clusters = stats.top_clusters if stats.top_clusters is defined else [] %}
+{% set taste_extremes = stats.taste_extremes if stats.taste_extremes is defined else {} %}
+{% set taste_extremes_ranked = stats.taste_extremes_ranked if stats.taste_extremes_ranked is defined else {} %}
+{% set johnny_avg = average_scores.get("johnny_core", 0) %}
+{% set weird_avg = average_scores.get("weirdness", 0) %}
+{% set emotion_avg = average_scores.get("emotional_weight", 0) %}
+{% if emotion_avg >= weird_avg and emotion_avg >= johnny_avg %}
+  {% set dominant_signal = "Emotional weight" %}
+{% elif weird_avg >= johnny_avg %}
+  {% set dominant_signal = "Weirdness" %}
+{% else %}
+  {% set dominant_signal = "Johnny-core" %}
+{% endif %}
+{% if emotion_avg <= weird_avg and emotion_avg <= johnny_avg %}
+  {% set quiet_signal = "Emotional weight" %}
+{% elif weird_avg <= johnny_avg %}
+  {% set quiet_signal = "Weirdness" %}
+{% else %}
+  {% set quiet_signal = "Johnny-core" %}
+{% endif %}
+{% if emotion_avg > weird_avg + 0.4 %}
+  {% set interpretation = "Your library currently leans heavier than weird." %}
+{% elif weird_avg > emotion_avg + 0.4 %}
+  {% set interpretation = "Your library currently leans weirder than heavy." %}
+{% elif johnny_avg > weird_avg and johnny_avg > emotion_avg %}
+  {% set interpretation = "Your library is clustering tightly around your core taste." %}
+{% else %}
+  {% set interpretation = "Your library is fairly balanced across core taste, weirdness, and weight." %}
+{% endif %}
+<section class="home-hero">
+  <div class="home-hero-row">
+    <div class="home-main-stack">
+      <div class="hero-copy">
+        <p class="eyebrow">Plex library as psychic terrain</p>
+        <h1>Taste Graph</h1>
+        <p class="subtitle">Explore your Plex library by vibe, not genre.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="/graph">Open Taste Map</a>
+          <a class="button" href="/library">Library</a>
+        </div>
+        <div class="stats-strip">
+          <div><strong>{{ stats.total_titles }}</strong><span>titles</span></div>
+          <div><strong>{{ stats.enriched_titles }}</strong><span>enriched</span></div>
+          <div><strong>{{ stats.pending_titles }}</strong><span>pending</span></div>
+          <div><strong>{{ stats.graph_edges }}</strong><span>connections</span></div>
+        </div>
+      </div>
+    </div>
+
+    <section class="home-panel home-recent-panel">
+      <p class="eyebrow">Recently Added</p>
+      <h2>Newest library arrivals</h2>
+      {% if recent_titles %}
+        <div class="pending-list enhanced recent-titles-list">
+          {% for item in recent_titles %}
+            <a href="/title/{{ item.id }}">
+              <div class="pending-copy">
+                <strong>{{ item.title }}</strong>
+                <span>
+                  {{ item.year or "n/a" }} · {{ item.source }}
+                  {% if item.enrichment_status == "enriched" and item.primary_cluster %} · {{ item.primary_cluster }}{% endif %}
+                </span>
+              </div>
+              <div class="pending-meta">
+                {% if item.enrichment_status == "enriched" and (item.johnny_core_score is not none or item.weirdness_score is not none or item.emotional_weight_score is not none) %}
+                  <div class="score-circles">
+                    <span class="score-circle johnny" style="--score: {{ item.johnny_core_score or 0 }}" title="Johnny-core: {{ item.johnny_core_score or 0 }}"><b>{{ item.johnny_core_score or "-" }}</b></span>
+                    <span class="score-circle weird" style="--score: {{ item.weirdness_score or 0 }}" title="Weirdness: {{ item.weirdness_score or 0 }}"><b>{{ item.weirdness_score or "-" }}</b></span>
+                    <span class="score-circle emotion" style="--score: {{ item.emotional_weight_score or 0 }}" title="Emotional weight: {{ item.emotional_weight_score or 0 }}"><b>{{ item.emotional_weight_score or "-" }}</b></span>
+                  </div>
+                {% endif %}
+                <small>{{ item.enrichment_status|replace("_", " ") }}</small>
+              </div>
+            </a>
+          {% endfor %}
+        </div>
+      {% else %}
+        <div class="empty-state">
+          <p>No titles found yet. Sync Plex to populate this list.</p>
+        </div>
+      {% endif %}
+    </section>
+  </div>
+
+  <div class="home-secondary-grid stats-row">
+    <section class="home-panel home-profile-panel taste-profile">
+      <p class="eyebrow">Your Taste Profile</p>
+      <h2>Average signal strength</h2>
+      {% if stats.enriched_titles %}
+        <div class="section profile-bars">
+          <div class="profile-bar-row signal-bar-row">
+            <div class="profile-bar-label">
+              <span>Johnny-core</span>
+              <b>{{ "%.1f"|format(johnny_avg) }}</b>
+            </div>
+            <div class="profile-bar-track signal-bar"><span class="profile-bar-fill johnny" style="width: {{ johnny_avg * 10 }}%"></span></div>
+          </div>
+          <div class="profile-bar-row signal-bar-row">
+            <div class="profile-bar-label">
+              <span>Weirdness</span>
+              <b>{{ "%.1f"|format(weird_avg) }}</b>
+            </div>
+            <div class="profile-bar-track signal-bar"><span class="profile-bar-fill weird" style="width: {{ weird_avg * 10 }}%"></span></div>
+          </div>
+          <div class="profile-bar-row signal-bar-row">
+            <div class="profile-bar-label">
+              <span>Emotional weight</span>
+              <b>{{ "%.1f"|format(emotion_avg) }}</b>
+            </div>
+            <div class="profile-bar-track signal-bar"><span class="profile-bar-fill emotion" style="width: {{ emotion_avg * 10 }}%"></span></div>
+          </div>
+        </div>
+        <div class="section profile-meta-grid">
+          <div class="profile-meta-card">
+            <span>Enriched titles</span>
+            <strong>{{ stats.enriched_titles }}</strong>
+          </div>
+          <div class="profile-meta-card">
+            <span>Dominant signal</span>
+            <strong>{{ dominant_signal }}</strong>
+          </div>
+          <div class="profile-meta-card">
+            <span>Quietest signal</span>
+            <strong>{{ quiet_signal }}</strong>
+          </div>
+        </div>
+        <p class="section profile-interpretation">{{ interpretation }}</p>
+        <div class="section profile-tag-stack">
+          <h3>Top signal tags</h3>
+          <div class="tag-row compact-tags">
+            {% for item in top_signal_tags %}
+              <em>{{ item.tag }} <small>{{ item.count }}</small></em>
+            {% else %}
+              <em>Not enough enriched tags yet</em>
+            {% endfor %}
+          </div>
+        </div>
+        <div class="section score-legend compact">
+          <span class="legend-item" title="How strongly this matches your core taste"><i class="legend-dot johnny"></i>Johnny-core</span>
+          <span class="legend-item" title="How unconventional or experimental it is"><i class="legend-dot weird"></i>Weirdness</span>
+          <span class="legend-item" title="How heavy or intense it feels"><i class="legend-dot emotion"></i>Emotional weight</span>
+        </div>
+      {% else %}
+        <p class="muted-text">Not enough enriched data yet.</p>
+      {% endif %}
+    </section>
+
+    <section class="home-panel home-clusters-panel">
+      <p class="eyebrow">Top Clusters</p>
+      <h2>Where the map is densest</h2>
+      <div class="cluster-bars">
+        {% for cluster, count in top_clusters %}
+          <a class="cluster-bar-link" href="/graph?cluster={{ cluster|urlencode }}">
+            <span>{{ cluster }}</span>
+            <b>{{ count }}</b>
+            <i style="width: {{ (count / top_clusters[0][1] * 100) if top_clusters else 0 }}%"></i>
+          </a>
+        {% else %}
+          <span class="muted-text">No clusters yet.</span>
+        {% endfor %}
+      </div>
+    </section>
+  </div>
+
+  <section class="home-panel home-extremes-panel">
+    <p class="eyebrow">Taste Extremes</p>
+    <h2>Strongest peaks</h2>
+    {% set has_extremes = taste_extremes.get("johnny_core") or taste_extremes.get("weirdness") or taste_extremes.get("emotional_weight") %}
+    {% if has_extremes %}
+      <div class="extreme-ranked-grid">
+        {% for key, label in [("johnny_core", "Top Johnny-core titles"), ("weirdness", "Top Weird titles"), ("emotional_weight", "Top Emotionally Heavy titles")] %}
+          {% set ranked_items = taste_extremes_ranked.get(key, []) %}
+          {% set peak = taste_extremes.get(key) %}
+          <div class="extreme-ranked-panel">
+            <h3>{{ label }}</h3>
+            {% if peak %}
+              <a class="extreme-peak-compact" href="/graph?title_id={{ peak.id }}">
+                <div>
+                  <span>Peak</span>
+                  <strong>{{ peak.title }}</strong>
+                  <small>{{ peak.year or "n/a" }} · {{ peak.primary_cluster or "Outliers" }}</small>
+                </div>
+                {% if peak.johnny_core_score is not none or peak.weirdness_score is not none or peak.emotional_weight_score is not none %}
+                  <div class="score-circles">
+                    <span class="score-circle johnny" style="--score: {{ peak.johnny_core_score or 0 }}" title="Johnny-core: {{ peak.johnny_core_score or 0 }}"><b>{{ peak.johnny_core_score or "-" }}</b></span>
+                    <span class="score-circle weird" style="--score: {{ peak.weirdness_score or 0 }}" title="Weirdness: {{ peak.weirdness_score or 0 }}"><b>{{ peak.weirdness_score or "-" }}</b></span>
+                    <span class="score-circle emotion" style="--score: {{ peak.emotional_weight_score or 0 }}" title="Emotional weight: {{ peak.emotional_weight_score or 0 }}"><b>{{ peak.emotional_weight_score or "-" }}</b></span>
+                  </div>
+                {% endif %}
+              </a>
+            {% endif %}
+            <div class="mini-rec-list home-mini-rec-list">
+              {% for item in ranked_items %}
+                <a href="/title/{{ item.id }}">
+                  <strong>{{ item.title }}</strong>
+                  <span>{{ item.year or "n/a" }} · {{ item.primary_cluster or "Outliers" }}</span>
+                  {% if item.johnny_core_score is not none or item.weirdness_score is not none or item.emotional_weight_score is not none %}
+                    <div class="score-circles">
+                      <span class="score-circle johnny" style="--score: {{ item.johnny_core_score or 0 }}" title="Johnny-core: {{ item.johnny_core_score or 0 }}"><b>{{ item.johnny_core_score or "-" }}</b></span>
+                      <span class="score-circle weird" style="--score: {{ item.weirdness_score or 0 }}" title="Weirdness: {{ item.weirdness_score or 0 }}"><b>{{ item.weirdness_score or "-" }}</b></span>
+                      <span class="score-circle emotion" style="--score: {{ item.emotional_weight_score or 0 }}" title="Emotional weight: {{ item.emotional_weight_score or 0 }}"><b>{{ item.emotional_weight_score or "-" }}</b></span>
+                    </div>
+                  {% endif %}
+                </a>
+              {% else %}
+                <div class="empty-state inline-empty">
+                  <p>Not enough enriched data yet.</p>
+                </div>
+              {% endfor %}
+            </div>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <p class="muted-text">Not enough enriched data yet.</p>
+    {% endif %}
+  </section>
+</section>
+{% endblock %}

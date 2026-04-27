@@ -1,0 +1,89 @@
+{% extends "base.html" %}
+{% block title %}Library | Taste Graph{% endblock %}
+{% block content %}
+<section class="page-header">
+  <p class="eyebrow">Your Plex titles, taste-indexed</p>
+  <h1>Library</h1>
+  <div class="quick-filters">
+    <button type="button" data-status-quick="pending">Pending enrichment</button>
+    <button type="button" data-status-quick="enriched">Enriched</button>
+    <button type="button" data-status-quick="">All titles</button>
+  </div>
+  <div class="library-filters">
+    <input id="librarySearch" class="wide-search" type="search" placeholder="Search by title, tag, year">
+    <select id="sourceFilter">
+      <option value="">All sources</option>
+    </select>
+    <select id="statusFilter">
+      <option value="">All statuses</option>
+    </select>
+    <select id="clusterFilterLibrary">
+      <option value="">All clusters</option>
+    </select>
+  </div>
+</section>
+<section class="title-grid" id="titleGrid">
+  {% for item in titles %}
+    <a class="title-card {{ 'pending-card' if item.enrichment_status != 'enriched' else '' }}" href="/title/{{ item.id }}"
+       data-search="{{ item.title }} {{ item.year }} {{ item.type }} {{ item.source }} {{ item.enrichment_status }} {{ item.primary_cluster }} {{ item.top_tags|join(' ') }}"
+       data-source="{{ item.source }}"
+       data-status="{{ item.enrichment_status }}"
+       data-cluster="{{ item.primary_cluster }}">
+      <span>{{ item.type }} · {{ item.source }}</span>
+      <h2>{{ item.title }}</h2>
+      <p>{{ item.year or "Unknown year" }} · {{ item.primary_cluster }}</p>
+      <p class="status-pill">{{ "Pending enrichment" if item.enrichment_status != "enriched" else "Enriched" }}</p>
+      <div class="score-circles">
+        <span class="score-circle johnny" style="--score: {{ item.johnny_core_score or 0 }}" title="Johnny-core score: {{ item.johnny_core_score or 'Pending' }}"><b>{{ item.johnny_core_score or "-" }}</b></span>
+        <span class="score-circle weird" style="--score: {{ item.weirdness_score or 0 }}" title="Weirdness score: {{ item.weirdness_score or 'Pending' }}"><b>{{ item.weirdness_score or "-" }}</b></span>
+        <span class="score-circle emotion" style="--score: {{ item.emotional_weight_score or 0 }}" title="Emotional weight score: {{ item.emotional_weight_score or 'Pending' }}"><b>{{ item.emotional_weight_score or "-" }}</b></span>
+      </div>
+      <div class="tag-row">
+        {% for tag in item.top_tags %}
+          <em>{{ tag }}</em>
+        {% endfor %}
+      </div>
+    </a>
+  {% endfor %}
+</section>
+<script>
+const search = document.querySelector("#librarySearch");
+const sourceFilter = document.querySelector("#sourceFilter");
+const statusFilter = document.querySelector("#statusFilter");
+const clusterFilter = document.querySelector("#clusterFilterLibrary");
+const cards = [...document.querySelectorAll(".title-card")];
+
+function fillOptions(select, values) {
+  [...new Set(values.filter(Boolean))].sort().forEach(value => {
+    const option = document.createElement("option");
+    option.value = value;
+    option.textContent = value;
+    select.append(option);
+  });
+}
+
+fillOptions(sourceFilter, cards.map(card => card.dataset.source));
+fillOptions(statusFilter, cards.map(card => card.dataset.status));
+fillOptions(clusterFilter, cards.map(card => card.dataset.cluster));
+
+document.querySelectorAll("[data-status-quick]").forEach(button => {
+  button.addEventListener("click", () => {
+    statusFilter.value = button.dataset.statusQuick;
+    applyLibraryFilters();
+  });
+});
+
+function applyLibraryFilters() {
+  const q = search.value.toLowerCase();
+  cards.forEach(card => {
+    const matchesSearch = card.dataset.search.toLowerCase().includes(q);
+    const matchesSource = !sourceFilter.value || card.dataset.source === sourceFilter.value;
+    const matchesStatus = !statusFilter.value || card.dataset.status === statusFilter.value;
+    const matchesCluster = !clusterFilter.value || card.dataset.cluster === clusterFilter.value;
+    card.hidden = !(matchesSearch && matchesSource && matchesStatus && matchesCluster);
+  });
+}
+
+[search, sourceFilter, statusFilter, clusterFilter].forEach(input => input?.addEventListener("input", applyLibraryFilters));
+</script>
+{% endblock %}
