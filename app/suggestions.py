@@ -89,11 +89,11 @@ def selected_title_suggested_asks(selected_title_id: int) -> dict:
 
     title = row["title"]
     suggestions = [
-        {"label": f"Closest to {title}", "question": f"Closest to {title}"},
-        {"label": f"Weirder than {title}", "question": f"Weirder than {title}"},
-        {"label": f"Heavier than {title}", "question": f"Heavier than {title}"},
-        {"label": f"Safer near {title}", "question": f"Safer picks near {title}"},
-        {"label": f"Why {title} connects", "question": f"Why does {title} connect to these?"},
+        {"label": f"Closest to {title}", "question": f"Closest to {title}", "intent": "closest"},
+        {"label": f"Weirder than {title}", "question": f"Weirder than {title}", "intent": "weirder"},
+        {"label": f"Heavier than {title}", "question": f"Heavier than {title}", "intent": "heavier"},
+        {"label": f"Safer near {title}", "question": f"Safer picks near {title}", "intent": "safer"},
+        {"label": f"Why {title} connects", "question": f"Why does {title} connect to these?", "intent": "why_connects"},
     ]
     return {"suggestions": suggestions}
 

@@ -5,8 +5,7 @@
 {% set average_scores = stats.average_scores if stats.average_scores is defined else {} %}
 {% set top_signal_tags = stats.top_signal_tags if stats.top_signal_tags is defined else [] %}
 {% set top_clusters = stats.top_clusters if stats.top_clusters is defined else [] %}
-{% set taste_extremes = stats.taste_extremes if stats.taste_extremes is defined else {} %}
-{% set taste_extremes_ranked = stats.taste_extremes_ranked if stats.taste_extremes_ranked is defined else {} %}
+{% set insight_sections = stats.insight_sections if stats.insight_sections is defined else [] %}
 {% set johnny_avg = average_scores.get("johnny_core", 0) %}
 {% set weird_avg = average_scores.get("weirdness", 0) %}
 {% set emotion_avg = average_scores.get("emotional_weight", 0) %}
@@ -168,58 +167,65 @@
     </section>
   </div>
 
-  <section class="home-panel home-extremes-panel">
-    <p class="eyebrow">Taste Extremes</p>
-    <h2>Strongest peaks</h2>
-    {% set has_extremes = taste_extremes.get("johnny_core") or taste_extremes.get("weirdness") or taste_extremes.get("emotional_weight") %}
-    {% if has_extremes %}
-      <div class="extreme-ranked-grid">
-        {% for key, label in [("johnny_core", "Top Johnny-core titles"), ("weirdness", "Top Weird titles"), ("emotional_weight", "Top Emotionally Heavy titles")] %}
-          {% set ranked_items = taste_extremes_ranked.get(key, []) %}
-          {% set peak = taste_extremes.get(key) %}
-          <div class="extreme-ranked-panel">
-            <h3>{{ label }}</h3>
-            {% if peak %}
-              <a class="extreme-peak-compact" href="/graph?title_id={{ peak.id }}">
-                <div>
-                  <span>Peak</span>
-                  <strong>{{ peak.title }}</strong>
-                  <small>{{ peak.year or "n/a" }} · {{ peak.primary_cluster or "Outliers" }}</small>
-                </div>
-                {% if peak.johnny_core_score is not none or peak.weirdness_score is not none or peak.emotional_weight_score is not none %}
-                  <div class="score-circles">
-                    <span class="score-circle johnny" style="--score: {{ peak.johnny_core_score or 0 }}" title="Johnny-core: {{ peak.johnny_core_score or 0 }}"><b>{{ peak.johnny_core_score or "-" }}</b></span>
-                    <span class="score-circle weird" style="--score: {{ peak.weirdness_score or 0 }}" title="Weirdness: {{ peak.weirdness_score or 0 }}"><b>{{ peak.weirdness_score or "-" }}</b></span>
-                    <span class="score-circle emotion" style="--score: {{ peak.emotional_weight_score or 0 }}" title="Emotional weight: {{ peak.emotional_weight_score or 0 }}"><b>{{ peak.emotional_weight_score or "-" }}</b></span>
+  <section class="home-panel home-insights-panel">
+    <div class="home-insights-head">
+      <div>
+        <p class="eyebrow">Fresh cuts from your library</p>
+        <h2>Rotating library signals</h2>
+      </div>
+      <p class="home-insights-note">New shelves are sampled from real cluster, signal, decade, and bridge data on each refresh.</p>
+    </div>
+    {% if insight_sections %}
+      <div class="insight-shelves">
+        {% for section in insight_sections %}
+          <article class="insight-shelf">
+            <div class="insight-shelf-head">
+              <div>
+                <h3>{{ section["title"] }}</h3>
+                <p>{{ section["subtitle"] }}</p>
+              </div>
+              <span>{{ section["type"]|replace("_", " ") }}</span>
+            </div>
+            <div class="insight-item-list">
+              {% for item in section["items"] %}
+                <a class="insight-item" href="{{ item.url }}">
+                  <div class="insight-item-copy">
+                    <strong>{{ item.title }}</strong>
+                    <span>{{ item.year or "n/a" }} · {{ item.display_cluster or item.primary_cluster or "Outliers" }} · {{ item.source }}</span>
                   </div>
-                {% endif %}
-              </a>
-            {% endif %}
-            <div class="mini-rec-list home-mini-rec-list">
-              {% for item in ranked_items %}
-                <a href="/title/{{ item.id }}">
-                  <strong>{{ item.title }}</strong>
-                  <span>{{ item.year or "n/a" }} · {{ item.primary_cluster or "Outliers" }}</span>
-                  {% if item.johnny_core_score is not none or item.weirdness_score is not none or item.emotional_weight_score is not none %}
-                    <div class="score-circles">
-                      <span class="score-circle johnny" style="--score: {{ item.johnny_core_score or 0 }}" title="Johnny-core: {{ item.johnny_core_score or 0 }}"><b>{{ item.johnny_core_score or "-" }}</b></span>
-                      <span class="score-circle weird" style="--score: {{ item.weirdness_score or 0 }}" title="Weirdness: {{ item.weirdness_score or 0 }}"><b>{{ item.weirdness_score or "-" }}</b></span>
-                      <span class="score-circle emotion" style="--score: {{ item.emotional_weight_score or 0 }}" title="Emotional weight: {{ item.emotional_weight_score or 0 }}"><b>{{ item.emotional_weight_score or "-" }}</b></span>
-                    </div>
-                  {% endif %}
+                  <div class="insight-item-meta">
+                    {% if item.has_scores %}
+                      <div class="score-circles">
+                        <span class="score-circle johnny" style="--score: {{ item.johnny_core_score or 0 }}" title="Johnny-core: {{ item.johnny_core_score or 0 }}"><b>{{ item.johnny_core_score or "-" }}</b></span>
+                        <span class="score-circle weird" style="--score: {{ item.weirdness_score or 0 }}" title="Weirdness: {{ item.weirdness_score or 0 }}"><b>{{ item.weirdness_score or "-" }}</b></span>
+                        <span class="score-circle emotion" style="--score: {{ item.emotional_weight_score or 0 }}" title="Emotional weight: {{ item.emotional_weight_score or 0 }}"><b>{{ item.emotional_weight_score or "-" }}</b></span>
+                      </div>
+                    {% endif %}
+                    <small>{{ item.enrichment_status|replace("_", " ") }}</small>
+                  </div>
                 </a>
-              {% else %}
-                <div class="empty-state inline-empty">
-                  <p>Not enough enriched data yet.</p>
-                </div>
               {% endfor %}
             </div>
-          </div>
+          </article>
         {% endfor %}
       </div>
     {% else %}
-      <p class="muted-text">Not enough enriched data yet.</p>
+      <div class="empty-state">
+        <p>Not enough enriched data yet.</p>
+      </div>
     {% endif %}
   </section>
 </section>
+<script>
+  (function () {
+    const warmGraph = () => {
+      fetch("/api/graph", { cache: "force-cache" }).catch(() => {});
+    };
+    if ("requestIdleCallback" in window) {
+      requestIdleCallback(warmGraph, { timeout: 1500 });
+    } else {
+      window.setTimeout(warmGraph, 1000);
+    }
+  })();
+</script>
 {% endblock %}

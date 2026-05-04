@@ -39,8 +39,11 @@ PLEX_TOKEN=your-plex-token
 OPENAI_API_KEY=your-openai-api-key
 OPENAI_MODEL=gpt-4o-mini
 DATABASE_URL=sqlite:///data/taste_graph.sqlite
+TASTE_GRAPH_DB_PATH=data/taste_graph.sqlite
 APP_NAME=Taste Graph v1
 ```
+
+`TASTE_GRAPH_DB_PATH` is the preferred SQLite path override for Docker/NAS deployment. `DATABASE_URL` is still supported for local compatibility.
 
 ## Initialize Database
 
@@ -218,6 +221,12 @@ Local development with an explicit host and port:
 python3 -m uvicorn app.main:app --host 127.0.0.1 --port 8000
 ```
 
+Health check:
+
+```bash
+curl http://127.0.0.1:8000/health
+```
+
 ## Mobile Notes
 
 Taste Graph is designed to collapse into a stacked mobile layout:
@@ -229,34 +238,121 @@ Taste Graph is designed to collapse into a stacked mobile layout:
 
 On phones and tablets, the graph keeps a bounded viewport height for touch pan/zoom, title rows stay tappable, and Ask results render directly below the input instead of opening a separate page.
 
-## Docker
+## Docker on Synology DS423+
 
-There is a minimal Dockerfile for later iteration:
+Taste Graph is set up for Docker Compose / Synology Container Manager Projects style deployment.
+
+Why this shape works well on DSM:
+
+- the container runs FastAPI/Uvicorn on `0.0.0.0:8000`
+- host port is configurable with `APP_PORT`
+- SQLite lives under `/app/data` inside the container
+- `./data` is mounted from the host, so the database survives rebuilds
+- secrets stay in `.env`
+- the same compose project can be rebuilt and restarted cleanly from Container Manager
+
+### Local Docker build/test
+
+Copy the example env file first:
 
 ```bash
-docker build -t taste-graph-v1 .
-docker run --env-file .env -p 8000:8000 taste-graph-v1
+cp .env.example .env
 ```
 
-For Docker or NAS use:
+Then fill in your Plex and OpenAI values.
 
-- run the app on `0.0.0.0`, not `127.0.0.1`
-- mount `/app/data` so the SQLite database persists
-- preserve your `.env` values for Plex and OpenAI
-- expose the port you want to reach from your LAN or reverse proxy
-
-Example:
+Build and run:
 
 ```bash
-docker run \
-  --env-file .env \
-  -p 8000:8000 \
-  -v /path/on/host/taste-graph-data:/app/data \
-  taste-graph-v1 \
-  python3 -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+docker compose build
+docker compose up
 ```
 
-The frontend uses relative paths like `/api/graph` and `/api/ask`, so it works cleanly behind Docker port mappings and typical reverse proxies without hardcoded localhost URLs.
+Open:
+
+```bash
+http://127.0.0.1:8001
+```
+
+### Detached
+
+```bash
+docker compose up -d
+```
+
+### Logs
+
+```bash
+docker logs -f taste-graph
+```
+
+### Stop
+
+```bash
+docker compose down
+```
+
+### Update / rebuild
+
+```bash
+git pull
+docker compose build --no-cache
+docker compose up -d
+```
+
+### Synology folder layout
+
+Recommended project folder:
+
+```text
+/volume1/docker/taste-graph
+```
+
+Persistent data:
+
+```text
+/volume1/docker/taste-graph/data
+```
+
+### Container Manager Project steps
+
+1. Upload or clone this repo into `/volume1/docker/taste-graph`
+2. Copy `.env.example` to `.env`
+3. Fill in:
+   - `APP_PORT`
+   - `PLEX_BASE_URL`
+   - `PLEX_TOKEN`
+   - `OPENAI_API_KEY`
+   - optionally `OPENAI_MODEL`
+4. Open Synology Container Manager
+5. Create a new Project
+6. Point it at the folder containing `docker-compose.yml`
+7. Build and start the project
+8. Open:
+
+```text
+http://NAS_IP:8001
+```
+
+### Docker details
+
+- container port: `8000`
+- host port: `${APP_PORT:-8001}`
+- persistent SQLite path in container: `/app/data/taste_graph.db`
+- health endpoint: `/health`
+
+The frontend uses relative paths like `/api/graph` and `/api/ask`, so it works cleanly behind Docker port mappings and reverse proxies without hardcoded localhost URLs.
+
+### Running scripts inside Docker
+
+These use the same mounted database path as the web app:
+
+```bash
+docker compose exec taste-graph python3 scripts/sync_plex.py --library "Movies" --limit 500 --offset 0
+docker compose exec taste-graph python3 scripts/enrich_titles.py --source plex --only-pending --limit 100
+docker compose exec taste-graph python3 scripts/build_edges.py
+docker compose exec taste-graph python3 scripts/health_check.py
+```
 
 ## JSON Endpoints
 

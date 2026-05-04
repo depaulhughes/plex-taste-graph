@@ -52,7 +52,7 @@ No commentary.
 No prose outside the JSON object.
 Fill every required field."""
 
-FAILED_ENRICHMENT_LOG = Path("data/failed_enrichment_responses.log")
+FAILED_ENRICHMENT_LOG = get_settings().data_dir / "failed_enrichment_responses.log"
 logger = logging.getLogger("taste_graph.openai")
 
 

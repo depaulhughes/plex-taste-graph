@@ -1,10 +1,13 @@
+import time
+
 from fastapi import FastAPI
+from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app.config import get_settings
 from app.db import init_db
-from app.routes import ask, graph, home, library
+from app.routes import about, ask, graph, home, library
 
 
 def create_app() -> FastAPI:
@@ -13,10 +16,18 @@ def create_app() -> FastAPI:
     app = FastAPI(title=settings.app_name)
     app.mount("/static", StaticFiles(directory="app/static"), name="static")
     app.state.templates = Jinja2Templates(directory="app/templates")
+    app.state.asset_version = str(int(time.time()))
+    app.state.graph_cache = None
     app.include_router(home.router)
     app.include_router(library.router)
+    app.include_router(about.router)
     app.include_router(graph.router)
     app.include_router(ask.router)
+
+    @app.get("/health")
+    def health() -> JSONResponse:
+        return JSONResponse({"status": "ok"})
+
     return app
 
 

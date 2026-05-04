@@ -51,22 +51,61 @@
 {% endif %}
 
 <section class="two-column">
-  <div>
+  <div class="title-detail-stack">
     <h2>Taste profile</h2>
     <p>{{ title.ai_summary or "This title is pending enrichment." }}</p>
-    {% if title.recommendation_hooks %}
-      <h3>Recommendation hooks</h3>
-      <div class="tag-row large">
-        {% for hook in title.recommendation_hooks %}
-          <em>{{ hook }}</em>
-        {% endfor %}
-      </div>
-    {% endif %}
     <div class="tag-sections">
       <div><h3>Tone</h3><div class="tag-row">{% for tag in title.tone_tags %}<em>{{ tag }}</em>{% else %}<span>Pending</span>{% endfor %}</div></div>
       <div><h3>Themes</h3><div class="tag-row">{% for tag in title.theme_tags %}<em>{{ tag }}</em>{% else %}<span>Pending</span>{% endfor %}</div></div>
       <div><h3>Style</h3><div class="tag-row">{% for tag in title.style_tags %}<em>{{ tag }}</em>{% else %}<span>Pending</span>{% endfor %}</div></div>
       <div><h3>Mood</h3><div class="tag-row">{% for tag in title.mood_tags %}<em>{{ tag }}</em>{% else %}<span>Pending</span>{% endfor %}</div></div>
+    </div>
+    <div class="detail-panel">
+      <h3>Why this title lands here</h3>
+      <p>{{ why_it_lands_here }}</p>
+    </div>
+    <div class="detail-panel">
+      <h3>Signal breakdown</h3>
+      <div class="signal-breakdown">
+        {% for item in signal_breakdown %}
+          <div class="signal-breakdown-card">
+            <div class="signal-breakdown-head">
+              <strong>{{ item.label }}</strong>
+              <span>{{ item.value }}</span>
+            </div>
+            <p>{{ item.description }}</p>
+          </div>
+        {% endfor %}
+      </div>
+    </div>
+    <div class="detail-panel">
+      <h3>Best watch context</h3>
+      <p>{{ title.closest_viewing_context or "Best when you want something in this title’s cluster with similar tone and emotional pressure." }}</p>
+    </div>
+    {% if title.recommendation_hooks or title.display_tags %}
+      <div class="detail-panel">
+        <h3>Discovery hooks</h3>
+        <div class="tag-row large">
+          {% for hook in title.recommendation_hooks %}
+            <em>{{ hook }}</em>
+          {% endfor %}
+          {% if not title.recommendation_hooks %}
+            {% for tag in title.display_tags %}
+              <em>{{ tag }}</em>
+            {% endfor %}
+          {% endif %}
+        </div>
+      </div>
+    {% endif %}
+    <div class="detail-panel">
+      <h3>Metadata quality</h3>
+      <div class="metadata-quality-grid">
+        <div><span>Status</span><strong>{{ "Enriched" if metadata_quality.enriched else "Pending" }}</strong></div>
+        <div><span>Map status</span><strong>{{ "Mapped" if metadata_quality.mapped else "Not mapped" }}</strong></div>
+        <div><span>Total connections</span><strong>{{ metadata_quality.connection_count }}</strong></div>
+        <div><span>Strong matches</span><strong>{{ metadata_quality.strong_count }}</strong></div>
+        <div><span>Soft matches</span><strong>{{ metadata_quality.soft_count }}</strong></div>
+      </div>
     </div>
   </div>
   <div>
@@ -81,16 +120,47 @@
     {% else %}
       <p>No strong taste neighbors yet.</p>
     {% endfor %}
-    <h3>Soft matches</h3>
-    {% for edge in soft_edges %}
-      <a class="connection soft-match" href="/title/{{ edge.nearby_id }}">
-        <strong>{{ edge.nearby_title }}</strong>
-        <span>{{ confidence_percent(edge.confidence or edge.weight) }}</span>
-        <p>{{ edge.explanation }}</p>
-      </a>
-    {% else %}
-      <p>No soft bridges yet.</p>
-    {% endfor %}
+    {% if secondary_edges %}
+      <h3>More distant neighbors</h3>
+      {% for edge in secondary_edges %}
+        <a class="connection soft-match" href="/title/{{ edge.nearby_id }}">
+          <strong>{{ edge.nearby_title }}</strong>
+          <span>{{ confidence_percent(edge.confidence or edge.weight) }}</span>
+          <p>{{ edge.explanation }}</p>
+        </a>
+      {% endfor %}
+    {% elif graph_insight.strong_match_count %}
+      <div class="detail-panel">
+        <h3>Graph insight</h3>
+        <p>{{ graph_insight.summary }}</p>
+        <div class="metadata-quality-grid">
+          <div><span>Strong matches</span><strong>{{ graph_insight.strong_match_count }}</strong></div>
+          <div><span>Average match</span><strong>{{ graph_insight.average_strong_score }}%</strong></div>
+          {% if graph_insight.highest_match %}
+            <div><span>Highest match</span><strong>{{ graph_insight.highest_match.title }} · {{ graph_insight.highest_match.score }}%</strong></div>
+          {% endif %}
+          {% if graph_insight.lowest_match %}
+            <div><span>Lowest shown</span><strong>{{ graph_insight.lowest_match.title }} · {{ graph_insight.lowest_match.score }}%</strong></div>
+          {% endif %}
+        </div>
+        {% if graph_insight.top_shared_terms %}
+          <h4>Shared traits</h4>
+          <div class="tag-row large">
+            {% for term in graph_insight.top_shared_terms %}
+              <em>{{ term }}</em>
+            {% endfor %}
+          </div>
+        {% endif %}
+        {% if graph_insight.top_clusters %}
+          <h4>Nearest clusters</h4>
+          <div class="tag-row large">
+            {% for item in graph_insight.top_clusters %}
+              <em>{{ item.label }} · {{ item.count }}</em>
+            {% endfor %}
+          </div>
+        {% endif %}
+      </div>
+    {% endif %}
   </div>
 </section>
 

@@ -1,4 +1,5 @@
 import json
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -59,6 +60,17 @@ class TitleProfile:
             else:
                 tags.extend(value or [])
         return [normalise_tag(tag) for tag in tags if tag]
+
+    @property
+    def hook_tags(self) -> list[str]:
+        return [normalise_tag(tag) for tag in json_list(self.profile.get("recommendation_hooks")) if tag]
+
+    @property
+    def viewing_context_terms(self) -> list[str]:
+        context = normalise_tag(self.profile.get("closest_viewing_context") or "")
+        if not context:
+            return []
+        return [token for token in re.findall(r"[a-z0-9][a-z0-9\-']{3,}", context) if token]
 
     @property
     def is_anchor(self) -> bool:

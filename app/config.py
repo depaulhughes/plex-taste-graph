@@ -26,9 +26,12 @@ class Settings:
     openai_api_key: Optional[str] = None
     openai_model: str = "gpt-4o-mini"
     database_url: str = "sqlite:///data/taste_graph.sqlite"
+    taste_graph_db_path: Optional[str] = None
 
     @property
     def sqlite_path(self) -> Path:
+        if self.taste_graph_db_path:
+            return Path(self.taste_graph_db_path)
         parsed = urlparse(self.database_url)
         if parsed.scheme != "sqlite":
             raise ValueError("Only sqlite DATABASE_URL values are supported in v1.")
@@ -36,6 +39,10 @@ class Settings:
         if raw_path.startswith("/") and not self.database_url.startswith("sqlite:////"):
             raw_path = raw_path.lstrip("/")
         return Path(raw_path)
+
+    @property
+    def data_dir(self) -> Path:
+        return self.sqlite_path.parent
 
 
 @lru_cache
@@ -48,4 +55,5 @@ def get_settings() -> Settings:
         openai_api_key=os.getenv("OPENAI_API_KEY"),
         openai_model=os.getenv("OPENAI_MODEL", "gpt-4o-mini"),
         database_url=os.getenv("DATABASE_URL", "sqlite:///data/taste_graph.sqlite"),
+        taste_graph_db_path=os.getenv("TASTE_GRAPH_DB_PATH"),
     )

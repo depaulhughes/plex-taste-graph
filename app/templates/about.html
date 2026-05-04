@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}About Taste Graph{% endblock %}
+{% block main_class %}about-page{% endblock %}
+{% block content %}
+  <div class="about-shell">
+    <header class="about-hero">
+      <div class="about-hero-copy">
+        <p class="eyebrow">About</p>
+        <h1 class="about-hero-title">Your library, mapped by taste.</h1>
+        <p class="subtitle">Plex organizes what you own. Taste Graph helps you understand what your collection feels like.</p>
+        <div class="hero-actions">
+          <a class="button primary" href="/graph">Open the map</a>
+          <a class="button" href="/library">Browse titles</a>
+        </div>
+        <div class="stats-strip about-stats">
+          <div><strong>{{ stats.total_titles }}</strong><span>Total titles</span></div>
+          <div><strong>{{ stats.enriched_titles }}</strong><span>Enriched titles</span></div>
+          <div><strong>{{ stats.graph_edges }}</strong><span>Connections</span></div>
+          <div><strong>{{ stats.top_clusters|length }}</strong><span>Clusters</span></div>
+        </div>
+      </div>
+
+      <aside class="home-panel about-hero-side">
+        <div class="about-hero-side-copy">
+          <p class="eyebrow">How it works</p>
+          <h2>Signals first, genre second.</h2>
+          <p>Taste Graph enriches each title with scores and tags, then connects titles that share meaningful taste signals. The result is a map of neighborhoods, bridges, and outliers instead of a flat library list.</p>
+        </div>
+
+        <div class="about-hero-summary">
+          <div>
+            <strong>Imported from Plex</strong>
+            <span>Each title starts as a library record.</span>
+          </div>
+          <div>
+            <strong>Enriched with taste data</strong>
+            <span>Tags, scores, and context shape the map.</span>
+          </div>
+          <div>
+            <strong>Connected by similarity</strong>
+            <span>Edges come from overlapping taste signals, not just shelf labels.</span>
+          </div>
+        </div>
+
+        <div class="about-cluster-card">
+          <div class="about-cluster-card-head">
+            <div>
+              <p class="eyebrow">Cluster distribution</p>
+              <h3>Current library mix</h3>
+            </div>
+            <span>Top clusters</span>
+          </div>
+          {% if stats.cluster_distribution %}
+            <div class="about-cluster-chart">
+              {% set max_count = stats.cluster_distribution[0]['count'] if stats.cluster_distribution else 1 %}
+              {% for item in stats.cluster_distribution %}
+                <div class="about-cluster-row">
+                  <div class="about-cluster-meta">
+                    <strong>{{ item.cluster }}</strong>
+                    <span>{{ item.count }} titles</span>
+                  </div>
+                  <div class="about-cluster-track">
+                    <i style="width: {{ ((item.count / max_count) * 100) | round(1) }}%"></i>
+                  </div>
+                  <b>{{ ((item.count / stats.cluster_total) * 100) | round(1) if stats.cluster_total else 0 }}%</b>
+                </div>
+              {% endfor %}
+            </div>
+          {% else %}
+            <div class="panel-hint">
+              <strong>No cluster data yet</strong>
+              <span>Enrich and rebuild edges to populate the cluster map.</span>
+            </div>
+          {% endif %}
+        </div>
+      </aside>
+    </header>
+
+    <article class="home-panel about-main-panel">
+      <div class="about-main-head">
+        <p class="eyebrow">What this is</p>
+        <h2>A taste-discovery layer for your Plex library.</h2>
+        <p class="about-lead">The page below keeps the explanation compact and grouped, so the whole product story reads like one composed panel instead of a long stack of unrelated strips.</p>
+      </div>
+
+      <div class="about-section-grid">
+        <section class="about-copy-block">
+          <h3>What is this?</h3>
+          <p>Taste Graph turns a Plex library into an interactive map of taste. Every title becomes a node. Titles with similar tone, themes, pacing, weirdness, emotional weight, and other taste signals connect to one another. Instead of browsing by genre alone, you can explore by vibe.</p>
+          <p>The result is less like a catalog and more like a neighborhood map. One title pulls you toward nearby titles that feel related for reasons you can actually see and ask about.</p>
+        </section>
+
+        <section class="about-copy-block">
+          <h3>Why not genre?</h3>
+          <p>Genre is useful, but it is broad. Sci-fi can mean <em>2001</em>, <em>Blade Runner</em>, <em>Star Wars</em>, or something wildly off-center. Horror can mean body horror, supernatural dread, slasher energy, surreal nightmare, or comedy-horror.</p>
+          <p>Taste Graph tries to map what titles feel like, not just what shelf they sit on.</p>
+        </section>
+
+        <section class="about-copy-block">
+          <h3>How the graph works</h3>
+          <ul class="about-list">
+            <li>Titles are imported from Plex.</li>
+            <li>Each title is enriched with tone, theme, style, mood, and signal scores.</li>
+            <li>Titles receive Johnny-core, Weirdness, and Emotional weight scores.</li>
+            <li>Meaningful shared traits generate connections.</li>
+            <li>Tight clusters form the main map; outliers stay searchable and can be previewed temporarily.</li>
+          </ul>
+        </section>
+
+        <section class="about-copy-block">
+          <h3>What the scores mean</h3>
+          <div class="about-score-meanings">
+            <div><strong>Johnny-core</strong><span>How strongly a title matches your personal taste gravity.</span></div>
+            <div><strong>Weirdness</strong><span>How strange, surreal, or off-center it feels.</span></div>
+            <div><strong>Emotional weight</strong><span>How intense, heavy, stressful, or psychologically loaded it is.</span></div>
+          </div>
+          <p class="about-note">These are taste signals, not objective ratings.</p>
+        </section>
+
+        <section class="about-copy-block">
+          <h3>Mapped vs outliers</h3>
+          <p>Mapped titles have enough meaningful similarity to live on the main graph. Outliers are still in the library and still searchable, but they do not belong to the default map. Selecting an outlier can temporarily reveal loose nearby connections so you can see where it might sit.</p>
+          <p>Outliers are not bad data. They are titles that need more context or do not fit strongly into the current map.</p>
+        </section>
+
+        <section class="about-copy-block">
+          <h3>The AI layer</h3>
+          <p>Ask Taste Graph uses the graph and enrichment data to answer questions like what is closest to something, what is weirder, why two titles connect, or what should you watch next.</p>
+          <p>When it can, the app uses local graph data first for fast, grounded similarity answers, then leans on AI for richer explanation.</p>
+        </section>
+
+        <section class="about-copy-block about-full-width">
+          <h3>What this is not</h3>
+          <div class="about-does-not-grid">
+            <div class="panel-hint"><strong>Not a Plex server monitor</strong><span>No bandwidth, CPU, RAM, transcoding, or NAS health views here.</span></div>
+            <div class="panel-hint"><strong>Not a replacement for Plex</strong><span>It sits on top of your library as a taste-discovery layer.</span></div>
+            <div class="panel-hint"><strong>Not a critic score system</strong><span>It is not trying to say what is objectively good.</span></div>
+            <div class="panel-hint"><strong>Not genre metadata</strong><span>It is about vibe, tone, and emotional relationship.</span></div>
+          </div>
+        </section>
+
+        <section class="about-copy-block about-full-width">
+          <h3>Future naming</h3>
+          <p>This page is intentionally structured so the product name can change later without reworking the explanation.</p>
+          <p class="about-note">Possible future names: Taste Graph, Plex Taste Atlas, Vibe Atlas, Cinema Terrain, Library Psyche, Psychic Terrain, Vibe Map, Taste Cartography.</p>
+        </section>
+      </div>
+    </article>
+  </div>
+{% endblock %}

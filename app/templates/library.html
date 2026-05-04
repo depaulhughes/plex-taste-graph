@@ -1,89 +1,191 @@
 {% extends "base.html" %}
 {% block title %}Library | Taste Graph{% endblock %}
 {% block content %}
-<section class="page-header">
-  <p class="eyebrow">Your Plex titles, taste-indexed</p>
+<section class="page-header library-page-header">
+  <p class="eyebrow">Search the full taste catalog</p>
   <h1>Library</h1>
-  <div class="quick-filters">
-    <button type="button" data-status-quick="pending">Pending enrichment</button>
-    <button type="button" data-status-quick="enriched">Enriched</button>
-    <button type="button" data-status-quick="">All titles</button>
-  </div>
-  <div class="library-filters">
-    <input id="librarySearch" class="wide-search" type="search" placeholder="Search by title, tag, year">
-    <select id="sourceFilter">
-      <option value="">All sources</option>
-    </select>
-    <select id="statusFilter">
-      <option value="">All statuses</option>
-    </select>
-    <select id="clusterFilterLibrary">
-      <option value="">All clusters</option>
-    </select>
+  <p class="subtitle">Browse the collection by cluster, signal profile, decade, tags, and graph placement instead of the old enrichment workflow.</p>
+  <div class="library-toolbar">
+    <div class="library-filters">
+      <input id="librarySearch" class="wide-search" type="search" placeholder="Search title, year, cluster, tag, source">
+      <select id="clusterFilterLibrary">
+        <option value="">All clusters</option>
+        {% for cluster in library_filters.clusters %}
+          <option value="{{ cluster.label }}">{{ cluster.label }} ({{ cluster.count }})</option>
+        {% endfor %}
+      </select>
+      <select id="signalFilterLibrary">
+        <option value="">All signals</option>
+        <option value="high_johnny">High Johnny-core</option>
+        <option value="high_weirdness">High weirdness</option>
+        <option value="high_emotional">High emotional weight</option>
+        <option value="weird_but_light">Weird but light</option>
+        <option value="heavy_but_grounded">Heavy but grounded</option>
+        <option value="balanced">Balanced signals</option>
+      </select>
+      <select id="decadeFilterLibrary">
+        <option value="">All years</option>
+        <option value="2020s">2020s</option>
+        <option value="2010s">2010s</option>
+        <option value="2000s">2000s</option>
+        <option value="1990s">1990s</option>
+        <option value="1980s">1980s</option>
+        <option value="1970s">1970s</option>
+        <option value="pre-1970">Pre-1970</option>
+      </select>
+      <select id="tagFilterLibrary">
+        <option value="">All tags</option>
+        {% for tag in library_filters.top_tags %}
+          <option value="{{ tag|lower }}">{{ tag }}</option>
+        {% endfor %}
+      </select>
+      <select id="connectionFilterLibrary">
+        <option value="">All connection states</option>
+        <option value="most_connected">Most connected</option>
+        <option value="least_connected">Least connected</option>
+        <option value="outliers">Loose Matches ({{ library_filters.counts.outliers }})</option>
+        <option value="strongly_mapped">Strongly mapped</option>
+      </select>
+      <select id="mediaTypeFilterLibrary">
+        <option value="">All media types</option>
+        {% for item in library_filters.media_types %}
+          <option value="{{ item.label }}">{{ item.label|title }} ({{ item.count }})</option>
+        {% endfor %}
+      </select>
+      <select id="sourceFilterLibrary">
+        <option value="">All sources</option>
+        {% for item in library_filters.sources %}
+          <option value="{{ item.label }}">{{ item.label|title }} ({{ item.count }})</option>
+        {% endfor %}
+      </select>
+    </div>
+    <div class="library-toolbar-meta">
+      <div class="library-top-tags">
+        {% for tag in library_filters.top_tags[:8] %}
+          <button type="button" class="library-chip" data-tag-chip="{{ tag|lower }}">{{ tag }}</button>
+        {% endfor %}
+      </div>
+      <div class="library-toolbar-actions">
+        <span id="libraryCount" class="library-count">Showing {{ titles|length }} of {{ titles|length }} titles</span>
+        <button type="button" id="resetLibraryFilters" class="button">Reset filters</button>
+      </div>
+    </div>
   </div>
 </section>
 <section class="title-grid" id="titleGrid">
   {% for item in titles %}
-    <a class="title-card {{ 'pending-card' if item.enrichment_status != 'enriched' else '' }}" href="/title/{{ item.id }}"
-       data-search="{{ item.title }} {{ item.year }} {{ item.type }} {{ item.source }} {{ item.enrichment_status }} {{ item.primary_cluster }} {{ item.top_tags|join(' ') }}"
+    <a class="title-card {{ 'pending-card' if item.status != 'enriched' else '' }}" href="/title/{{ item.id }}"
+       data-search="{{ item.title }} {{ item.year }} {{ item.media_type }} {{ item.source }} {{ item.status }} {{ item.cluster }} {{ item.display_tags|join(' ') }} {{ item.connection_count }}"
+       data-title="{{ item.title }}"
+       data-year="{{ item.year or '' }}"
+       data-cluster="{{ item.cluster }}"
+       data-signal="{{ item.signal_bucket }}"
+       data-decade="{{ item.decade_bucket }}"
+       data-tags="{{ item.display_tags|join('|')|lower }}"
+       data-johnny-core="{{ item.johnny_core or 0 }}"
+       data-weirdness="{{ item.weirdness or 0 }}"
+       data-emotional-weight="{{ item.emotional_weight or 0 }}"
+       data-connection="{{ item.connection_bucket }}"
+       data-connection-count="{{ item.connection_count }}"
+       data-media-type="{{ item.media_type }}"
        data-source="{{ item.source }}"
-       data-status="{{ item.enrichment_status }}"
-       data-cluster="{{ item.primary_cluster }}">
-      <span>{{ item.type }} · {{ item.source }}</span>
+       data-outlier="{{ item.is_outlier }}">
+      <div class="title-card-kicker">
+        <span>{{ item.media_type|title }}{% if item.source %} · {{ item.source }}{% endif %}</span>
+        {% if item.is_outlier %}
+          <p class="status-pill subtle">Outlier</p>
+        {% elif item.status != "enriched" %}
+          <p class="status-pill">Pending enrichment</p>
+        {% endif %}
+      </div>
       <h2>{{ item.title }}</h2>
-      <p>{{ item.year or "Unknown year" }} · {{ item.primary_cluster }}</p>
-      <p class="status-pill">{{ "Pending enrichment" if item.enrichment_status != "enriched" else "Enriched" }}</p>
+      <p>{{ item.year or "Unknown year" }} · {{ item.cluster }}</p>
+      <div class="title-card-meta">
+        <small>{{ item.connection_count }} {{ "connection" if item.connection_count == 1 else "connections" }}</small>
+      </div>
       <div class="score-circles">
-        <span class="score-circle johnny" style="--score: {{ item.johnny_core_score or 0 }}" title="Johnny-core score: {{ item.johnny_core_score or 'Pending' }}"><b>{{ item.johnny_core_score or "-" }}</b></span>
-        <span class="score-circle weird" style="--score: {{ item.weirdness_score or 0 }}" title="Weirdness score: {{ item.weirdness_score or 'Pending' }}"><b>{{ item.weirdness_score or "-" }}</b></span>
-        <span class="score-circle emotion" style="--score: {{ item.emotional_weight_score or 0 }}" title="Emotional weight score: {{ item.emotional_weight_score or 'Pending' }}"><b>{{ item.emotional_weight_score or "-" }}</b></span>
+        <span class="score-circle johnny" style="--score: {{ item.johnny_core or 0 }}" title="Johnny-core score: {{ item.johnny_core or 'Pending' }}"><b>{{ item.johnny_core or "-" }}</b></span>
+        <span class="score-circle weird" style="--score: {{ item.weirdness or 0 }}" title="Weirdness score: {{ item.weirdness or 'Pending' }}"><b>{{ item.weirdness or "-" }}</b></span>
+        <span class="score-circle emotion" style="--score: {{ item.emotional_weight or 0 }}" title="Emotional weight score: {{ item.emotional_weight or 'Pending' }}"><b>{{ item.emotional_weight or "-" }}</b></span>
       </div>
       <div class="tag-row">
-        {% for tag in item.top_tags %}
-          <em>{{ tag }}</em>
-        {% endfor %}
+        {% if item.display_tags %}
+          {% for tag in item.display_tags[:5] %}
+            <em>{{ tag }}</em>
+          {% endfor %}
+        {% elif item.status == "enriched" %}
+          <em class="tag-empty">No tags yet</em>
+        {% endif %}
       </div>
     </a>
   {% endfor %}
 </section>
 <script>
 const search = document.querySelector("#librarySearch");
-const sourceFilter = document.querySelector("#sourceFilter");
-const statusFilter = document.querySelector("#statusFilter");
 const clusterFilter = document.querySelector("#clusterFilterLibrary");
+const signalFilter = document.querySelector("#signalFilterLibrary");
+const decadeFilter = document.querySelector("#decadeFilterLibrary");
+const tagFilter = document.querySelector("#tagFilterLibrary");
+const connectionFilter = document.querySelector("#connectionFilterLibrary");
+const mediaTypeFilter = document.querySelector("#mediaTypeFilterLibrary");
+const sourceFilter = document.querySelector("#sourceFilterLibrary");
+const countLabel = document.querySelector("#libraryCount");
+const resetButton = document.querySelector("#resetLibraryFilters");
 const cards = [...document.querySelectorAll(".title-card")];
 
-function fillOptions(select, values) {
-  [...new Set(values.filter(Boolean))].sort().forEach(value => {
-    const option = document.createElement("option");
-    option.value = value;
-    option.textContent = value;
-    select.append(option);
+function applyLibraryFilters() {
+  const q = search.value.trim().toLowerCase();
+  console.debug("library filters", {
+    query: q,
+    cluster: clusterFilter.value,
+    signal: signalFilter.value,
+    decade: decadeFilter.value,
+    tag: tagFilter.value,
+    connection: connectionFilter.value,
+    mediaType: mediaTypeFilter.value,
+    source: sourceFilter.value
   });
+  let visible = 0;
+  cards.forEach((card) => {
+    const searchText = (card.dataset.search || "").toLowerCase();
+    const tags = (card.dataset.tags || "").split("|").filter(Boolean);
+    const signal = card.dataset.signal || "";
+    const connection = card.dataset.connection || "";
+    const matches =
+      (!q || searchText.includes(q)) &&
+      (!clusterFilter.value || card.dataset.cluster === clusterFilter.value) &&
+      (!signalFilter.value || signal === signalFilter.value) &&
+      (!decadeFilter.value || card.dataset.decade === decadeFilter.value) &&
+      (!tagFilter.value || tags.includes(tagFilter.value)) &&
+      (!connectionFilter.value || connection === connectionFilter.value) &&
+      (!mediaTypeFilter.value || card.dataset.mediaType === mediaTypeFilter.value) &&
+      (!sourceFilter.value || card.dataset.source === sourceFilter.value);
+    card.hidden = !matches;
+    if (matches) visible += 1;
+  });
+  countLabel.textContent = `Showing ${visible} of ${cards.length} titles`;
 }
 
-fillOptions(sourceFilter, cards.map(card => card.dataset.source));
-fillOptions(statusFilter, cards.map(card => card.dataset.status));
-fillOptions(clusterFilter, cards.map(card => card.dataset.cluster));
+function resetLibraryFilters() {
+  [search, clusterFilter, signalFilter, decadeFilter, tagFilter, connectionFilter, mediaTypeFilter, sourceFilter].forEach((input) => {
+    input.value = "";
+  });
+  applyLibraryFilters();
+}
 
-document.querySelectorAll("[data-status-quick]").forEach(button => {
+document.querySelectorAll("[data-tag-chip]").forEach((button) => {
   button.addEventListener("click", () => {
-    statusFilter.value = button.dataset.statusQuick;
+    tagFilter.value = button.dataset.tagChip || "";
     applyLibraryFilters();
   });
 });
 
-function applyLibraryFilters() {
-  const q = search.value.toLowerCase();
-  cards.forEach(card => {
-    const matchesSearch = card.dataset.search.toLowerCase().includes(q);
-    const matchesSource = !sourceFilter.value || card.dataset.source === sourceFilter.value;
-    const matchesStatus = !statusFilter.value || card.dataset.status === statusFilter.value;
-    const matchesCluster = !clusterFilter.value || card.dataset.cluster === clusterFilter.value;
-    card.hidden = !(matchesSearch && matchesSource && matchesStatus && matchesCluster);
-  });
-}
+[search, clusterFilter, signalFilter, decadeFilter, tagFilter, connectionFilter, mediaTypeFilter, sourceFilter].forEach((input) => {
+  input?.addEventListener("input", applyLibraryFilters);
+  input?.addEventListener("change", applyLibraryFilters);
+});
 
-[search, sourceFilter, statusFilter, clusterFilter].forEach(input => input?.addEventListener("input", applyLibraryFilters));
+resetButton?.addEventListener("click", resetLibraryFilters);
+applyLibraryFilters();
 </script>
 {% endblock %}

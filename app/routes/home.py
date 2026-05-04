@@ -1,11 +1,13 @@
+import logging
 from typing import Any, Dict
 
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 
-from app.graph_builder import stats_payload
+from app.graph_builder import get_home_insight_sections, stats_payload
 
 router = APIRouter()
+logger = logging.getLogger("taste_graph.home")
 
 
 def default_home_stats() -> Dict[str, Any]:
@@ -32,7 +34,44 @@ def default_home_stats() -> Dict[str, Any]:
             "emotional_weight": [],
         },
         "recent_titles": [],
+        "insight_sections": [],
     }
+
+
+def fallback_insight_sections(raw: Dict[str, Any]) -> list[Dict[str, Any]]:
+    ranked = raw.get("taste_extremes_ranked") or {}
+    sections = []
+    for key, title, subtitle in (
+        ("johnny_core", "Top Johnny-core titles", "Titles closest to the center of your current taste gravity."),
+        ("weirdness", "Weirdest titles", "The most off-center titles in the current library."),
+        ("emotional_weight", "Most emotionally heavy titles", "The heaviest titles in the current library."),
+    ):
+        items = []
+        for item in ranked.get(key) or []:
+            items.append({
+                "id": item.get("id"),
+                "title": item.get("title"),
+                "year": item.get("year"),
+                "source": item.get("source") or "manual",
+                "enrichment_status": "enriched",
+                "primary_cluster": item.get("primary_cluster") or "Outliers",
+                "display_cluster": item.get("primary_cluster") or "Outliers",
+                "johnny_core_score": item.get("johnny_core_score"),
+                "weirdness_score": item.get("weirdness_score"),
+                "emotional_weight_score": item.get("emotional_weight_score"),
+                "has_scores": True,
+                "url": f"/graph?title_id={item.get('id')}",
+            })
+            if len(items) >= 6:
+                break
+        if items:
+            sections.append({
+                "title": title,
+                "subtitle": subtitle,
+                "type": "fallback",
+                "items": items,
+            })
+    return sections
 
 
 def normalized_home_stats() -> Dict[str, Any]:
@@ -69,6 +108,19 @@ def normalized_home_stats() -> Dict[str, Any]:
         "weirdness": taste_extremes_ranked.get("weirdness") or [],
         "emotional_weight": taste_extremes_ranked.get("emotional_weight") or [],
     }
+    try:
+        stats["insight_sections"] = get_home_insight_sections(limit=4)
+    except Exception as exc:
+        logger.exception("home insight section generation failed: %s", exc)
+        stats["insight_sections"] = []
+    if not stats["insight_sections"]:
+        stats["insight_sections"] = fallback_insight_sections(raw)
+        logger.warning(
+            "home insight sections fell back to deterministic shelves: count=%s enriched=%s total=%s",
+            len(stats["insight_sections"]),
+            stats["enriched_titles"],
+            stats["total_titles"],
+        )
     return stats
 
 

@@ -1,0 +1,17 @@
+.git
+.gitignore
+__pycache__
+*.pyc
+.pycache
+.env
+.venv
+venv
+.DS_Store
+node_modules
+.coverage
+.pytest_cache
+pytest_cache
+data/*.db-wal
+data/*.db-shm
+data/*.sqlite-wal
+data/*.sqlite-shm
