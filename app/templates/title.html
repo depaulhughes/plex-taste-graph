@@ -102,26 +102,26 @@
       <div class="metadata-quality-grid">
         <div><span>Status</span><strong>{{ "Enriched" if metadata_quality.enriched else "Pending" }}</strong></div>
         <div><span>Map status</span><strong>{{ "Mapped" if metadata_quality.mapped else "Not mapped" }}</strong></div>
-        <div><span>Total connections</span><strong>{{ metadata_quality.connection_count }}</strong></div>
-        <div><span>Strong matches</span><strong>{{ metadata_quality.strong_count }}</strong></div>
-        <div><span>Soft matches</span><strong>{{ metadata_quality.soft_count }}</strong></div>
+        <div><span>Total connections</span><strong><a href="#graph-neighbors">{{ metadata_quality.connection_count }}</a></strong></div>
+        <div><span>Strong matches</span><strong><a href="#strong-matches">{{ metadata_quality.strong_count }}</a></strong></div>
+        <div><span>Soft matches</span><strong><a href="#soft-matches">{{ metadata_quality.soft_count }}</a></strong></div>
       </div>
     </div>
   </div>
   <div>
-    <h2>Graph neighbors</h2>
-    <h3>Strong matches</h3>
-    {% for edge in strong_edges %}
+    <h2 id="graph-neighbors">Graph neighbors</h2>
+    <h3 id="strong-matches">{{ primary_neighbor_label }} <span>({{ primary_neighbor_edges|length }})</span></h3>
+    {% for edge in primary_neighbor_edges %}
       <a class="connection" href="/title/{{ edge.nearby_id }}">
         <strong>{{ edge.nearby_title }}</strong>
         <span>{{ confidence_percent(edge.confidence or edge.weight) }}</span>
         <p>{{ edge.explanation }}</p>
       </a>
     {% else %}
-      <p>No strong taste neighbors yet.</p>
+      <p>No graph neighbors yet.</p>
     {% endfor %}
     {% if secondary_edges %}
-      <h3>More distant neighbors</h3>
+      <h3 id="soft-matches">Soft / bridge matches <span>({{ secondary_edges|length }})</span></h3>
       {% for edge in secondary_edges %}
         <a class="connection soft-match" href="/title/{{ edge.nearby_id }}">
           <strong>{{ edge.nearby_title }}</strong>

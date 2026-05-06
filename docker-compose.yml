@@ -3,17 +3,16 @@ services:
     build: .
     container_name: taste-graph
     ports:
-      - "${APP_PORT:-8001}:8000"
+      - "32403:8000"
     env_file:
       - .env
     environment:
-      TASTE_GRAPH_DB_PATH: ${TASTE_GRAPH_DB_PATH:-/app/data/taste_graph.db}
+      TASTE_GRAPH_DB_PATH: ${TASTE_GRAPH_DB_PATH:-/app/data/taste_graph.sqlite}
     volumes:
-      - ./data:/app/data
+      - /volume1/docker/taste-graph/data:/app/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python3", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health')"]
+      test: ["CMD", "python3", "scripts/health_check.py"]
       interval: 30s
-      timeout: 5s
+      timeout: 10s
       retries: 3
-      start_period: 20s

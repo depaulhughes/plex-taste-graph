@@ -3,6 +3,7 @@ import logging
 from pathlib import Path
 from typing import Any, Optional
 
+import openai
 from openai import OpenAI
 from pydantic import BaseModel, Field, ValidationError
 
@@ -232,6 +233,47 @@ class OpenAITasteClient:
             timeout=timeout_seconds,
         )
         return json.loads(response.choices[0].message.content or "{}")
+
+    def explain_graph_answer(self, question: str, context: str, timeout_seconds: float = 10.0) -> dict[str, Any]:
+        blocked = server_diagnostic_response(question)
+        if blocked:
+            return {"explanation": blocked.get("why_it_fits") or blocked.get("recommendation") or ""}
+        response = self.client.chat.completions.create(
+            model=self.model,
+            response_format={"type": "json_object"},
+            max_tokens=260,
+            messages=[
+                {
+                    "role": "system",
+                    "content": (
+                        "You are explaining a Plex movie and TV taste graph. "
+                        "Nodes are Plex titles. Edges are taste-similarity connections between titles. "
+                        "This is NOT a location graph. Do not mention locations, routes, points of interest, destinations, or physical graph traversal. "
+                        "Use ONLY the provided local graph evidence. Explain why the already-returned recommendation cards make sense. "
+                        "If bridge or soft matches appear, describe them as looser or more tentative fits. "
+                        "If a directional bucket is empty, explain the local ceiling or fallback honestly, but do not claim there are no edges when matches are present. "
+                        "Do not invent titles, tags, clusters, reasons, or connections. "
+                        "Return JSON with keys: title, explanation."
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"Question: {question}\n\n"
+                        "Explain this local taste-graph answer in plain language using only the evidence below.\n"
+                        "Focus on tone, themes, mood, style, emotional weight, weirdness, cluster logic, and explicit edge reasons.\n\n"
+                        f"Taste graph evidence JSON:\n{context}"
+                    ),
+                },
+            ],
+            temperature=0.2,
+            timeout=timeout_seconds,
+        )
+        payload = json.loads(response.choices[0].message.content or "{}")
+        return {
+            "title": payload.get("title") or "AI explanation",
+            "explanation": payload.get("explanation") or "AI explanation unavailable right now.",
+        }
 
 
 def server_diagnostic_response(question: str) -> Optional[dict[str, Any]]:

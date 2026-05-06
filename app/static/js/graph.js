@@ -51,6 +51,7 @@ let hoverPreviewLocked = false;
 let suggestedAskRequestId = 0;
 let askRequestId = 0;
 let askExplainRequestId = 0;
+let titleContextRequestId = 0;
 let activeAskState = null;
 let currentLayout = null;
 let layoutRunGeneration = 0;
@@ -1391,34 +1392,22 @@ function showDetails(node, options = {}) {
   clearTemporaryOutlierPreview();
   applySelectionHighlight();
   const data = node.data();
-  const connectedEdges = node.connectedEdges()
-    .filter((edge) => edge.visible())
-    .sort((a, b) => Number(b.data("confidence") || 0) - Number(a.data("confidence") || 0));
-  const strongMatches = renderConnectionList(node, connectedEdges.filter((edge) => edge.data("edge_type") !== "soft"));
-  const softMatches = renderConnectionList(node, connectedEdges.filter((edge) => edge.data("edge_type") === "soft"));
   document.querySelector("#details").innerHTML = `
     <p class="eyebrow">${data.cluster}</p>
     <h2>${data.title} ${data.year ? `<span>${data.year}</span>` : ""}</h2>
     <p><strong>${data.source}</strong> · ${data.enrichment_status === "enriched" ? "Enriched" : "Pending enrichment"}</p>
-    <p>${data.summary || "No summary available yet."}</p>
+    <p>${data.summary || "Loading full title context..."}</p>
     <h3>Scores</h3>
     ${scoreCircles(data)}
-    <h3>Top tags</h3>
-    <div class="tag-row">${(data.tags || []).map((tag) => `<em>${tag}</em>`).join("") || "<em>Pending enrichment</em>"}</div>
-    <h3>AI summary</h3>
-    <p>${data.ai_summary || "Pending OpenAI enrichment."}</p>
+    <div class="detail-panel"><p>Loading enriched title context...</p></div>
     <div class="detail-actions">
       <button type="button" class="button" data-expand-neighborhood>${expandedNeighborhood ? "Collapse neighborhood" : "Expand this neighborhood"}</button>
       <button type="button" class="button" data-focus-title>Focus selected</button>
     </div>
-    <h3>Strong matches</h3>
-    <ul class="nearby-list">${strongMatches || "<li>No strong taste neighbors yet.</li>"}</ul>
-    <h3>Soft matches</h3>
-    ${!strongMatches && softMatches ? "<p>This title has no strong taste neighbors yet, but it loosely connects to...</p>" : ""}
-    <ul class="nearby-list soft-list">${softMatches || "<li>No soft bridges yet.</li>"}</ul>
     <a class="button primary" href="/title/${data.id}">Open detail</a>
   `;
   attachDetailInteractions();
+  loadTitleContext(data.id, data.title);
   renderMovieBrowser();
   syncBrowserSelection(node.id(), { smooth: true });
   loadSuggestedAsks(data.id, "selection");
@@ -1427,6 +1416,86 @@ function showDetails(node, options = {}) {
   if (controls.focusSelected) controls.focusSelected.disabled = false;
   if (controls.focusSelectedOverlay) controls.focusSelectedOverlay.disabled = false;
   setGraphModeNote(`Focused on ${data.title}. Explore its neighborhood or ask from this context.`);
+}
+
+async function loadTitleContext(titleId, fallbackTitle = "") {
+  const requestId = ++titleContextRequestId;
+  console.debug("title context fetch start", { requestId, selected_title_id: titleId, selected_title: fallbackTitle, source_endpoint: `/api/title-context/${titleId}` });
+  try {
+    const response = await fetch(`/api/title-context/${encodeURIComponent(titleId)}`);
+    const data = await response.json();
+    if (requestId !== titleContextRequestId || String(selectedTitleId) !== String(titleId)) {
+      console.debug("title context fetch ignored", { requestId, selected_title_id: titleId });
+      return;
+    }
+    if (!response.ok) {
+      throw new Error(data.detail || "Couldn’t load title context");
+    }
+    console.debug("title context fetch applied", {
+      requestId,
+      selected_title_id: data.title_id,
+      selected_title: data.title,
+      enriched: data.enriched,
+      top_tags_count: (data.top_tags || []).length,
+      ai_summary_present: Boolean(data.ai_summary),
+      strong_match_count: (data.strong_matches || []).length,
+      soft_bridge_match_count: (data.soft_matches || []).length + (data.bridge_titles || []).length,
+      source_endpoint: `/api/title-context/${titleId}`
+    });
+    renderCanonicalDetails(data);
+  } catch (error) {
+    if (requestId !== titleContextRequestId || String(selectedTitleId) !== String(titleId)) return;
+    console.debug("title context fetch failed", { requestId, selected_title_id: titleId, error: String(error) });
+    const panel = document.querySelector("#details");
+    const existingError = panel.querySelector(".panel-hint.error");
+    if (!existingError) {
+      const wrapper = document.createElement("div");
+      wrapper.className = "panel-hint error";
+      wrapper.innerHTML = `<strong>Couldn’t load full title context.</strong><span>The selected title is still active, but the enriched detail fetch failed.</span>`;
+      panel.insertBefore(wrapper, panel.querySelector(".detail-actions") || panel.lastElementChild);
+    }
+  }
+}
+
+function renderCanonicalDetails(data) {
+  const topTags = (data.top_tags || []).slice(0, 8);
+  const summary = data.ai_summary || data.summary || "Pending OpenAI enrichment.";
+  const primaryMatches = renderContextMatchList(data.primary_matches || data.strong_matches || []);
+  const primaryMatchesLabel = data.primary_matches_label || "Strong matches";
+  const softBridgeMatches = renderContextMatchList([...(data.soft_matches || []), ...(data.bridge_titles || [])], true);
+  document.querySelector("#details").innerHTML = `
+    <p class="eyebrow">${data.cluster || "Mixed / Transitional"}</p>
+    <h2>${data.title} ${data.year ? `<span>${data.year}</span>` : ""}</h2>
+    <p><strong>${data.source || "manual"}</strong> · ${data.enriched ? "Enriched" : "Pending enrichment"}</p>
+    <p>${data.summary || "No summary available yet."}</p>
+    <h3>Scores</h3>
+    ${scoreCircles({ scores: data.scores || {} })}
+    <h3>Top tags</h3>
+    <div class="tag-row">${topTags.length ? topTags.map((tag) => `<em>${tag}</em>`).join("") : `<em>${data.enriched ? (data.cluster || "Mixed / Transitional") : "Pending enrichment"}</em>`}</div>
+    <h3>AI summary</h3>
+    <p>${summary}</p>
+    <div class="detail-actions">
+      <button type="button" class="button" data-expand-neighborhood>${expandedNeighborhood ? "Collapse neighborhood" : "Expand this neighborhood"}</button>
+      <button type="button" class="button" data-focus-title>Focus selected</button>
+    </div>
+    <h3>${primaryMatchesLabel}</h3>
+    <ul class="nearby-list">${primaryMatches || "<li>No graph neighbors yet.</li>"}</ul>
+    ${softBridgeMatches ? `<h3>Soft matches</h3><ul class="nearby-list soft-list">${softBridgeMatches}</ul>` : `<div class="detail-panel compact"><p>No softer bridge matches yet.</p></div>`}
+    <a class="button primary" href="/title/${data.title_id}">Open detail</a>
+  `;
+  attachDetailInteractions();
+}
+
+function renderContextMatchList(items, soft = false) {
+  return (items || []).map((item) => {
+    const confidence = item.confidence != null ? `<span>${formatConfidence(item.confidence)}</span>` : "";
+    const descriptor = item.edge_type === "bridge"
+      ? " · bridge connection"
+      : item.edge_type === "soft"
+        ? " · looser match"
+        : "";
+    return `<li class="${soft ? "soft-match" : ""}"><button type="button" class="link-button" data-open-node="${item.id}">${item.title}</button> ${confidence}<small>${(item.shared_traits || []).slice(0, 3).join(" / ")}${descriptor}</small><p>${item.reason || ""}</p></li>`;
+  }).join("");
 }
 
 function renderMovieBrowser() {
@@ -1623,13 +1692,29 @@ function renderSelectedAskActions(title) {
   const panel = document.querySelector("#selectedAskActions");
   panel.hidden = false;
   panel.innerHTML = `
-    <button type="button" data-intent="similar" data-query="What is similar to ${title}?" data-question="What is similar to ${title}?">Similar to this</button>
-    <button type="button" data-intent="weirder" data-query="Give me weirder picks like ${title}." data-question="Give me weirder picks like ${title}.">Weirder picks</button>
-    <button type="button" data-intent="heavier" data-query="Give me emotionally heavier picks like ${title}." data-question="Give me emotionally heavier picks like ${title}.">Emotionally heavier</button>
-    <button type="button" data-intent="why_connects" data-query="Why does ${title} connect to these?" data-question="Why does ${title} connect to these?">Why it connects</button>
+    <button type="button" data-intent="similar" data-query="What is similar to ${title}?" data-question="What is similar to ${title}?" data-selected-title-id="${selectedTitleId || ""}">Similar to this</button>
+    <button type="button" data-intent="weirder" data-query="Give me weirder picks like ${title}." data-question="Give me weirder picks like ${title}." data-selected-title-id="${selectedTitleId || ""}">Weirder picks</button>
+    <button type="button" data-intent="heavier" data-query="Give me emotionally heavier picks like ${title}." data-question="Give me emotionally heavier picks like ${title}." data-selected-title-id="${selectedTitleId || ""}">Emotionally heavier</button>
+    <button type="button" data-intent="why_connects" data-query="Why does ${title} connect to these?" data-question="Why does ${title} connect to these?" data-selected-title-id="${selectedTitleId || ""}">Why it connects</button>
   `;
   panel.querySelectorAll("button").forEach((button) => {
-    button.addEventListener("click", () => askTasteGraph(button.dataset.question, { intent: button.dataset.intent || "" }));
+    button.addEventListener("click", () => {
+      setActiveAskChip(button.dataset.question, button.dataset.intent || "", button.dataset.selectedTitleId || null);
+      askTasteGraph(button.dataset.question, {
+        intent: button.dataset.intent || "",
+        selectedTitleId: button.dataset.selectedTitleId || null
+      });
+    });
+  });
+}
+
+function setActiveAskChip(query, intent = "", selectedTitleId = null) {
+  document.querySelectorAll("#askPrompts button, #selectedAskActions button").forEach((button) => {
+    const active = (button.dataset.query || button.dataset.question || "") === (query || "")
+      && (button.dataset.intent || "") === (intent || "")
+      && String(button.dataset.selectedTitleId || "") === String(selectedTitleId || "");
+    button.classList.toggle("is-active", active);
+    button.setAttribute("aria-pressed", String(active));
   });
 }
 
@@ -1648,12 +1733,29 @@ function initGraphAsk() {
   syncAskResetState();
 }
 
+function shouldAutoExplain(question, intent = "") {
+  const normalized = String(question || "").trim().toLowerCase();
+  if (intent === "why_connects") return true;
+  return (
+    normalized.includes("why ")
+    || normalized.startsWith("why")
+    || normalized.includes("explain")
+    || normalized.includes("reason")
+    || normalized.includes("how does")
+    || normalized.includes("how do")
+    || (normalized.includes("connect") && normalized.includes("these"))
+  );
+}
+
 async function loadSuggestedAsks(selectedTitleId = null, reason = "selection") {
   const container = document.querySelector("#askPrompts");
   const requestId = ++suggestedAskRequestId;
   console.debug("fetchSuggestedAsks", { reason, selectedTitleId, requestId });
   container.innerHTML = "<span class=\"muted-text\">Loading suggestions...</span>";
-  const params = selectedTitleId ? `?selected_title_id=${encodeURIComponent(selectedTitleId)}` : "";
+  const search = new URLSearchParams();
+  if (selectedTitleId) search.set("selected_title_id", String(selectedTitleId));
+  if (reason === "new-prompts") search.set("refresh", String(Date.now()));
+  const params = search.toString() ? `?${search.toString()}` : "";
   const data = await fetch(`/api/suggested-asks${params}`).then((response) => response.json());
   if (requestId !== suggestedAskRequestId) {
     console.debug("fetchSuggestedAsks ignored", { reason, selectedTitleId, requestId });
@@ -1672,10 +1774,18 @@ async function loadSuggestedAsks(selectedTitleId = null, reason = "selection") {
     button.dataset.titleName = selectedNode && selectedTitleId && String(selectedNode.id()) === String(selectedTitleId)
       ? (selectedNode.data("title") || "")
       : "";
-    button.addEventListener("click", () => askTasteGraph(button.dataset.question, {
-      intent: button.dataset.intent || "",
-      selectedTitleId: button.dataset.selectedTitleId || null
-    }));
+    button.addEventListener("click", () => {
+      console.debug("suggested chip click", {
+        intent: button.dataset.intent || "",
+        selected_title_id: button.dataset.selectedTitleId || null,
+        query: button.dataset.query || button.dataset.question
+      });
+      setActiveAskChip(button.dataset.query || button.dataset.question, button.dataset.intent || "", button.dataset.selectedTitleId || null);
+      askTasteGraph(button.dataset.question, {
+        intent: button.dataset.intent || "",
+        selectedTitleId: button.dataset.selectedTitleId || null
+      });
+    });
     container.append(button);
   });
 }
@@ -1684,6 +1794,7 @@ async function askTasteGraph(question, options = {}) {
   if (!question) return;
   const explainWithAi = Boolean(options.explainWithAi);
   const intent = options.intent || "";
+  const autoExplain = options.autoExplain ?? shouldAutoExplain(question, intent);
   const explicitSelectedTitleId = options.selectedTitleId || null;
   const input = document.querySelector("#graphAskQuestion");
   const answer = document.querySelector("#graphAskAnswer");
@@ -1694,17 +1805,18 @@ async function askTasteGraph(question, options = {}) {
   const selectedTitleForAsk = explicitSelectedTitleId != null
     ? Number(explicitSelectedTitleId)
     : (selectedNode ? Number(selectedNode.id()) : null);
-  console.debug("ask submit", { requestId, selected_title_id: selectedTitleForAsk, intent, query: question, explainWithAi });
+  console.debug("submitAsk", { query: question, intent, selectedTitleId: selectedTitleForAsk, askRequestId: requestId, explainWithAi, autoExplain });
+  setActiveAskChip(question, intent, selectedTitleForAsk);
   answer.hidden = false;
   input.value = question;
   syncAskResetState(true);
   button.disabled = true;
   button.classList.add("is-loading");
-  button.textContent = "Thinking...";
+  button.textContent = "Finding...";
   status.hidden = false;
-  status.textContent = explainWithAi ? "Asking AI for a richer explanation..." : "Thinking through graph neighbors...";
+  status.textContent = explainWithAi ? "Asking AI for a richer explanation..." : "Searching graph neighbors...";
   if (answer.hidden || !answer.innerHTML.trim()) {
-    answer.innerHTML = explainWithAi ? "<p>Asking AI for a richer explanation...</p>" : "<p>Thinking through graph neighbors...</p>";
+    answer.innerHTML = explainWithAi ? "<p>Asking AI for a richer explanation...</p>" : "<p>Searching graph neighbors...</p>";
   }
   try {
     const response = await fetch("/api/ask", {
@@ -1712,6 +1824,7 @@ async function askTasteGraph(question, options = {}) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         question,
+        query: question,
         explain_with_ai: explainWithAi,
         selected_title_id: selectedTitleForAsk,
         intent
@@ -1746,6 +1859,9 @@ async function askTasteGraph(question, options = {}) {
     if (explainButton) {
       explainButton.addEventListener("click", () => askExplainWithAi(activeAskState));
     }
+    if (autoExplain && data.answer_source === "local_graph" && data.can_explain_with_ai) {
+      askExplainWithAi(activeAskState);
+    }
   } catch (error) {
     if (requestId === askRequestId) {
       console.debug("ask response failed", { requestId, selected_title_id: selectedTitleForAsk, intent, query: question, error: String(error) });
@@ -1755,7 +1871,7 @@ async function askTasteGraph(question, options = {}) {
     if (requestId === askRequestId) {
       button.disabled = false;
       button.classList.remove("is-loading");
-      button.textContent = "Ask";
+      button.textContent = "Find";
       status.hidden = true;
       syncAskResetState();
     }
@@ -1791,7 +1907,7 @@ async function askExplainWithAi(state) {
       return;
     }
     if (!response.ok || data.ok === false) {
-      throw new Error(data.error || "AI explanation unavailable right now.");
+      throw new Error(data.user_message || data.error || "AI explanation unavailable right now.");
     }
     console.debug("ask explain applied", {
       requestId,
@@ -1813,7 +1929,8 @@ async function askExplainWithAi(state) {
       error: String(error),
       previousLocalResultPreserved: true
     });
-    slot.innerHTML = "<div class=\"ask-ai-panel error\"><h4>AI explanation</h4><p>AI explanation unavailable right now.</p></div>";
+    const message = error && error.message ? error.message : "AI explanation unavailable right now.";
+    slot.innerHTML = `<div class="ask-ai-panel error"><h4>AI explanation</h4><p>${message}</p></div>`;
   }
 }
 
@@ -1829,7 +1946,10 @@ function showAskInlineError(message) {
 
 function renderAskAnswer(data) {
   const intent = data.intent || "closest";
+  const headerTitle = data.display_title || data.requested_query || data.recommendation || "Taste Graph answer";
   const emptyReasons = data.bucket_empty_reasons || {};
+  const bucketTitles = data.bucket_titles || {};
+  const sectionMeta = data.sections || {};
   const warnings = data.warnings || [];
   const list = (items, emptyLabel = "No matches yet.") => (items || []).map((item) => {
     if (typeof item === "string") {
@@ -1859,33 +1979,43 @@ function renderAskAnswer(data) {
   const groups = {
     best_matches: {
       key: "best_matches",
-      title: "Best matches",
-      items: data.best_matches || data.nearby_titles,
+      title: sectionMeta.best_matches?.label || bucketTitles.best_matches || "Best matches",
+      subtitle: sectionMeta.best_matches?.subtitle || "",
+      mode: sectionMeta.best_matches?.mode || "strict",
+      items: sectionMeta.best_matches?.items || data.best_matches || data.nearby_titles,
       empty: "No strong recommendation set yet."
     },
     weirdest_matches: {
       key: "weirdest_matches",
-      title: "Weirder picks",
-      items: data.weirdest_matches,
-      empty: emptyReasons.weirdest_matches || "No weirder nearby picks yet."
+      title: sectionMeta.weirdest_matches?.label || bucketTitles.weirdest_matches || "Weirder picks",
+      subtitle: sectionMeta.weirdest_matches?.subtitle || "",
+      mode: sectionMeta.weirdest_matches?.mode || "strict",
+      items: sectionMeta.weirdest_matches?.items || data.weirdest_matches,
+      empty: sectionMeta.weirdest_matches?.empty_reason || emptyReasons.weirdest_matches || "No weirder nearby picks yet."
     },
     emotionally_heavier_matches: {
       key: "emotionally_heavier_matches",
-      title: "Emotionally heavier",
-      items: data.emotionally_heavier_matches,
-      empty: emptyReasons.emotionally_heavier_matches || "No heavier nearby matches yet."
+      title: sectionMeta.emotionally_heavier_matches?.label || bucketTitles.emotionally_heavier_matches || "Emotionally heavier",
+      subtitle: sectionMeta.emotionally_heavier_matches?.subtitle || "",
+      mode: sectionMeta.emotionally_heavier_matches?.mode || "strict",
+      items: sectionMeta.emotionally_heavier_matches?.items || data.emotionally_heavier_matches,
+      empty: sectionMeta.emotionally_heavier_matches?.empty_reason || emptyReasons.emotionally_heavier_matches || "No heavier nearby matches yet."
     },
     safer_easier_watches: {
       key: "safer_easier_watches",
-      title: "Safer / easier",
-      items: data.safer_easier_watches,
-      empty: emptyReasons.safer_easier_watches || "No easier nearby picks yet."
+      title: sectionMeta.safer_easier_watches?.label || bucketTitles.safer_easier_watches || "Safer / easier",
+      subtitle: sectionMeta.safer_easier_watches?.subtitle || "",
+      mode: sectionMeta.safer_easier_watches?.mode || "strict",
+      items: sectionMeta.safer_easier_watches?.items || data.safer_easier_watches,
+      empty: sectionMeta.safer_easier_watches?.empty_reason || emptyReasons.safer_easier_watches || "No easier nearby picks yet."
     },
     bridge_titles: {
       key: "bridge_titles",
-      title: "Bridge titles",
-      items: data.bridge_titles,
-      empty: emptyReasons.bridge_titles || "No bridge titles surfaced yet."
+      title: sectionMeta.bridge_titles?.label || bucketTitles.bridge_titles || "Bridge titles",
+      subtitle: sectionMeta.bridge_titles?.subtitle || "",
+      mode: sectionMeta.bridge_titles?.mode || "strict",
+      items: sectionMeta.bridge_titles?.items || data.bridge_titles,
+      empty: sectionMeta.bridge_titles?.empty_reason || emptyReasons.bridge_titles || "No bridge titles surfaced yet."
     }
   };
   let order = ["best_matches", "weirdest_matches", "emotionally_heavier_matches", "safer_easier_watches", "bridge_titles"];
@@ -1900,18 +2030,28 @@ function renderAskAnswer(data) {
   } else if (intent === "similar") {
     order = ["best_matches", "bridge_titles", "weirdest_matches"];
   }
-  const sections = order.map((key) => {
+  const sections = order.map((key, index) => {
     const group = groups[key];
+    const hasItems = Array.isArray(group.items) && group.items.length > 0;
+    if (!hasItems && group.mode === "empty" && index > 0) {
+      return "";
+    }
+    const subtitle = group.subtitle ? `<p class="ask-result-group-subtitle">${group.subtitle}</p>` : "";
+    const content = hasItems
+      ? `<div class="ask-result-list">${list(group.items, group.empty)}</div>`
+      : `<div class="ask-result-empty-compact"><p>${group.empty}</p></div>`;
     return `
       <section class="ask-result-group ask-result-group-${group.key}">
         <h4>${group.title}</h4>
-        <div class="ask-result-list">${list(group.items, group.empty)}</div>
+        ${subtitle}
+        ${content}
       </section>
     `;
   }).join("");
   return `
     <div class="ask-answer-summary">
-      <h3>${data.recommendation || "Taste Graph answer"}</h3>
+      <h3>${headerTitle}</h3>
+      ${data.recommendation && data.recommendation !== headerTitle ? `<p class="ask-answer-kicker">${data.recommendation}</p>` : ""}
       <p>${data.why_these_fit || data.why_it_fits || ""}</p>
     </div>
     ${warnings.length ? `<div class="ask-answer-warnings">${warnings.map((warning) => `<p>${warning}</p>`).join("")}</div>` : ""}
@@ -2933,7 +3073,7 @@ function resetAskPanel() {
   controls.askStatus.textContent = "Checking your taste graph...";
   controls.askButton.disabled = false;
   controls.askButton.classList.remove("is-loading");
-  controls.askButton.textContent = "Ask";
+  controls.askButton.textContent = "Find";
   loadSuggestedAsks(selectedTitleId ? Number(selectedTitleId) : null, "reset-ask");
   syncAskResetState();
 }

@@ -5,6 +5,7 @@ import time
 from collections import Counter, deque
 from typing import Any, Optional
 
+import openai
 from fastapi import APIRouter, Request
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
@@ -17,18 +18,21 @@ from app.models import json_list
 from app.openai_client import OpenAITasteClient, server_diagnostic_response
 
 router = APIRouter()
-ASK_CACHE_SCHEMA_VERSION = "4"
+ASK_CACHE_SCHEMA_VERSION = "6"
+ASK_EXPLAIN_CACHE_VERSION = "1"
 
 
 class AskRequest(BaseModel):
-    question: str
+    question: str = ""
+    query: Optional[str] = None
     explain_with_ai: bool = False
     selected_title_id: Optional[int] = None
     intent: Optional[str] = None
 
 
 class AskExplainRequest(BaseModel):
-    question: str
+    question: str = ""
+    query: Optional[str] = None
     selected_title_id: Optional[int] = None
     intent: Optional[str] = None
 
@@ -66,16 +70,17 @@ def ask_page(request: Request) -> HTMLResponse:
 
 @router.post("/api/ask")
 def api_ask(payload: AskRequest) -> dict:
+    question_text = payload.query or payload.question
     total_start = time.perf_counter()
-    blocked = server_diagnostic_response(payload.question)
+    blocked = server_diagnostic_response(question_text)
     if blocked:
-        store_question(payload.question, blocked)
+        store_question(question_text, blocked)
         return blocked
 
     graph_version = current_graph_version()
-    normalized = normalize_question(payload.question)
+    normalized = normalize_question(question_text)
     mode = "ai" if payload.explain_with_ai else "fast"
-    intent = resolve_ask_intent(payload.question, payload.intent)
+    intent = resolve_ask_intent(question_text, payload.intent)
     cache_key = cache_key_for(mode, normalized, payload.selected_title_id, intent)
     cached = get_cached_answer(cache_key, graph_version)
     if cached:
@@ -92,15 +97,15 @@ def api_ask(payload: AskRequest) -> dict:
     retrieval_start = time.perf_counter()
     warnings: list[str] = []
     try:
-        fast_answer = similarity_fast_answer(payload.question, payload.selected_title_id, intent)
+        fast_answer = similarity_fast_answer(question_text, payload.selected_title_id, intent)
     except Exception as exc:
-        logger.exception("ask fast-answer failure intent=%s selected_title_id=%s query=%r", intent, payload.selected_title_id, payload.question)
+        logger.exception("ask fast-answer failure intent=%s selected_title_id=%s query=%r", intent, payload.selected_title_id, question_text)
         fast_answer = None
         warnings.append("Local graph bucketing partially failed.")
     try:
-        deterministic_answer = deterministic_connection_answer(payload.question, payload.selected_title_id)
+        deterministic_answer = deterministic_connection_answer(question_text, payload.selected_title_id)
     except Exception:
-        logger.exception("ask deterministic failure intent=%s selected_title_id=%s query=%r", intent, payload.selected_title_id, payload.question)
+        logger.exception("ask deterministic failure intent=%s selected_title_id=%s query=%r", intent, payload.selected_title_id, question_text)
         deterministic_answer = None
         warnings.append("Connection reasoning was unavailable.")
     retrieval_time = time.perf_counter() - retrieval_start
@@ -110,30 +115,30 @@ def api_ask(payload: AskRequest) -> dict:
         answer = fast_answer
     elif deterministic_answer and not payload.explain_with_ai:
         answer = deterministic_answer
-    elif get_settings().openai_api_key and should_use_ai(payload.question, payload.explain_with_ai, fast_answer, deterministic_answer):
-        context = build_focused_context(payload.question, fast_answer, payload.selected_title_id, deterministic_answer)
+    elif get_settings().openai_api_key and should_use_ai(question_text, payload.explain_with_ai, fast_answer, deterministic_answer):
+        context = build_focused_context(question_text, fast_answer, payload.selected_title_id, deterministic_answer)
         openai_start = time.perf_counter()
         try:
-            answer = OpenAITasteClient().answer_question(payload.question, context, timeout_seconds=3.0)
+            answer = OpenAITasteClient().answer_question(question_text, context, timeout_seconds=3.0)
         except Exception:
-            answer = deterministic_answer or fast_answer or local_taste_answer(payload.question)
+            answer = deterministic_answer or fast_answer or local_taste_answer(question_text)
         openai_time = time.perf_counter() - openai_start
         if fast_answer:
             answer.setdefault("fast_result", fast_answer)
         if deterministic_answer:
             answer.setdefault("graph_reasoning", deterministic_answer.get("graph_reasoning"))
     else:
-        answer = deterministic_answer or fast_answer or local_taste_answer(payload.question)
+        answer = deterministic_answer or fast_answer or local_taste_answer(question_text)
 
-    answer = normalize_ask_response(answer, payload.selected_title_id, intent, warnings)
+    answer = normalize_ask_response(answer, payload.selected_title_id, intent, warnings, question_text)
     answer.setdefault("can_explain_with_ai", bool(get_settings().openai_api_key) and not payload.explain_with_ai)
     answer["timing"] = {
         "local_retrieval_seconds": round(retrieval_time, 4),
         "openai_seconds": round(openai_time, 4),
         "total_seconds": round(time.perf_counter() - total_start, 4),
     }
-    set_cached_answer(cache_key, graph_version, payload.question, answer)
-    store_question(payload.question, answer)
+    set_cached_answer(cache_key, graph_version, question_text, answer)
+    store_question(question_text, answer)
     logger.info(
         "ask timings intent=%s selected_title_id=%s cache_key=%s local=%.3fs openai=%.3fs total=%.3fs mode=%s",
         intent,
@@ -149,42 +154,122 @@ def api_ask(payload: AskRequest) -> dict:
 
 @router.post("/api/ask/explain")
 def api_ask_explain(payload: AskExplainRequest) -> dict:
-    intent = resolve_ask_intent(payload.question, payload.intent)
-    logger.info(
-        "ask explain request intent=%s selected_title_id=%s query=%r",
-        intent,
-        payload.selected_title_id,
-        payload.question,
-    )
-    if not get_settings().openai_api_key:
-        return {"ok": False, "error": "AI explanation unavailable right now."}
-    try:
-        fast_answer = similarity_fast_answer(payload.question, payload.selected_title_id, intent)
-        deterministic_answer = deterministic_connection_answer(payload.question, payload.selected_title_id)
-        context = build_focused_context(payload.question, fast_answer, payload.selected_title_id, deterministic_answer)
-        response = OpenAITasteClient().answer_question(payload.question, context, timeout_seconds=4.0)
-        explanation = response.get("why_these_fit") or response.get("why_it_fits") or "AI explanation unavailable right now."
-        title = response.get("recommendation") or "AI explanation"
+    question_text = payload.query or payload.question
+    intent = resolve_ask_intent(question_text, payload.intent)
+    settings = get_settings()
+    focus = title_by_id(payload.selected_title_id) if payload.selected_title_id else None
+    fast_answer = similarity_fast_answer(question_text, payload.selected_title_id, intent)
+    top_match_ids = [item.get("id") for item in (fast_answer or {}).get("best_matches", []) if isinstance(item, dict) and item.get("id")]
+    normalized = normalize_question(question_text)
+    cache_key = explain_cache_key_for(normalized, payload.selected_title_id, intent, top_match_ids)
+    graph_version = current_graph_version()
+    cached = get_cached_answer(cache_key, graph_version)
+    if cached:
+        cached["cached"] = True
         logger.info(
-            "ask explain success intent=%s selected_title_id=%s",
-            intent,
+            "ask explain cache hit selected_title_id=%s selected_title=%r intent=%s cache_key=%s ok=%s",
             payload.selected_title_id,
+            (focus or {}).get("title"),
+            intent,
+            cache_key,
+            cached.get("ok"),
         )
-        return {
+        return cached
+    section_counts = {k: len(v) for k, v in (fast_answer or {}).get("sections", {}).items()} if fast_answer else {}
+    best_matches = (fast_answer or {}).get("best_matches") or []
+    bridge_titles = (fast_answer or {}).get("bridge_titles") or []
+    top_match_titles = [
+        item.get("title")
+        for item in (best_matches + bridge_titles)
+        if isinstance(item, dict) and item.get("title")
+    ][:3]
+    logger.info(
+        "ask_explain_start selected_title_id=%s selected_title=%r intent=%s query=%r has_openai_key=%s model=%s openai_sdk_version=%s local_bucket_counts=%s best_matches_count=%s bridge_titles_count=%s top_match_titles=%s payload_bytes=%s",
+        payload.selected_title_id,
+        (focus or {}).get("title"),
+        intent,
+        payload.question,
+        bool(settings.openai_api_key),
+        settings.openai_model,
+        getattr(openai, "__version__", "unknown"),
+        section_counts,
+        len(best_matches),
+        len(bridge_titles),
+        top_match_titles,
+        len(payload.question.encode("utf-8")),
+    )
+    if not settings.openai_api_key:
+        logger.info("ask_explain_failed selected_title_id=%s intent=%s reason=missing-openai-key", payload.selected_title_id, intent)
+        return {"ok": False, "error_code": "missing_openai_api_key", "user_message": "AI explanation unavailable: missing OpenAI API key.", "error": "AI explanation unavailable: missing OpenAI API key."}
+    try:
+        deterministic_answer = deterministic_connection_answer(payload.question, payload.selected_title_id)
+        context = build_ai_explain_context(payload.question, fast_answer, payload.selected_title_id, deterministic_answer, intent)
+        logger.info(
+            "ask explain context selected_title_id=%s selected_title=%r intent=%s prompt_length=%s",
+            payload.selected_title_id,
+            (focus or {}).get("title"),
+            intent,
+            len(context),
+        )
+        response = OpenAITasteClient().explain_graph_answer(payload.question, context, timeout_seconds=10.0)
+        explanation = response.get("explanation") or "AI explanation unavailable right now."
+        title = response.get("title") or "AI explanation"
+        result = {
             "ok": True,
             "intent": intent,
             "selected_title_id": payload.selected_title_id,
             "title": title,
             "explanation": explanation,
         }
-    except Exception:
-        logger.exception(
-            "ask explain failed intent=%s selected_title_id=%s query=%r",
-            intent,
+        set_cached_answer(cache_key, graph_version, payload.question, result)
+        logger.info(
+            "ask_explain_success selected_title_id=%s selected_title=%r intent=%s cache_key=%s ai_response_length=%s",
             payload.selected_title_id,
-            payload.question,
+            (focus or {}).get("title"),
+            intent,
+            cache_key,
+            len(explanation),
         )
-        return {"ok": False, "error": "AI explanation unavailable right now."}
+        return result
+    except Exception as exc:
+        logger.exception(
+            "ask_explain_failed selected_title_id=%s selected_title=%r intent=%s query=%r exception_type=%s exception_message=%s",
+            payload.selected_title_id,
+            (focus or {}).get("title"),
+            intent,
+            payload.question,
+            type(exc).__name__,
+            str(exc),
+        )
+        error_code = type(exc).__name__
+        user_message = "AI explanation unavailable right now."
+        if error_code == "APIConnectionError":
+            user_message = "AI explanation unavailable: couldn’t reach OpenAI."
+        elif error_code == "AuthenticationError":
+            user_message = "AI explanation unavailable: OpenAI authentication failed."
+        elif error_code == "APITimeoutError":
+            user_message = "AI explanation unavailable: OpenAI timed out while explaining these graph relationships."
+        elif error_code == "NotFoundError":
+            user_message = f"AI explanation unavailable: model {settings.openai_model} was not found."
+        return {"ok": False, "error_code": error_code, "user_message": user_message, "error": user_message}
+
+
+@router.get("/api/debug/openai")
+def api_debug_openai() -> dict:
+    settings = get_settings()
+    client_configured = False
+    if settings.openai_api_key:
+        try:
+            OpenAITasteClient()
+            client_configured = True
+        except Exception:
+            client_configured = False
+    return {
+        "openai_key_present": bool(settings.openai_api_key),
+        "model": settings.openai_model or "gpt-4o-mini",
+        "client_configured": client_configured,
+        "openai_sdk_version": getattr(openai, "__version__", "unknown"),
+    }
 
 
 def normalize_question(question: str) -> str:
@@ -208,26 +293,52 @@ def resolve_ask_intent(question: str, explicit_intent: Optional[str] = None) -> 
     return "closest"
 
 
-def normalize_ask_response(answer: dict, selected_title_id: Optional[int], intent: str, warnings: list[str]) -> dict:
+def normalize_ask_response(answer: dict, selected_title_id: Optional[int], intent: str, warnings: list[str], requested_query: str) -> dict:
     focus = title_by_id(selected_title_id) if selected_title_id else None
     answer = dict(answer or {})
     answer["ok"] = True
     answer["intent"] = intent
+    answer["requested_query"] = requested_query
+    answer["display_title"] = requested_query or answer.get("recommendation")
     answer["selected_title_id"] = selected_title_id
     answer["selected_title_name"] = (focus or {}).get("title") or answer.get("matched_title")
     answer["warnings"] = warnings
-    answer["sections"] = {
-        "best_matches": [dict(item) if isinstance(item, dict) else item for item in (answer.get("best_matches", []) or [])],
-        "weirdest_matches": [dict(item) if isinstance(item, dict) else item for item in (answer.get("weirdest_matches", []) or [])],
-        "emotionally_heavier_matches": [dict(item) if isinstance(item, dict) else item for item in (answer.get("emotionally_heavier_matches", []) or [])],
-        "safer_easier_watches": [dict(item) if isinstance(item, dict) else item for item in (answer.get("safer_easier_watches", []) or [])],
-        "bridge_titles": [dict(item) if isinstance(item, dict) else item for item in (answer.get("bridge_titles", []) or [])],
-    }
+    if answer.get("sections") and isinstance(answer.get("sections"), dict):
+        normalized_sections = {}
+        for key, section in answer["sections"].items():
+            if not isinstance(section, dict):
+                continue
+            normalized_sections[key] = {
+                "items": [dict(item) if isinstance(item, dict) else item for item in (section.get("items", []) or [])],
+                "mode": section.get("mode", "strict"),
+                "label": section.get("label"),
+                "subtitle": section.get("subtitle"),
+                "empty_reason": section.get("empty_reason"),
+            }
+        answer["sections"] = normalized_sections
+    else:
+        answer["sections"] = {
+            "best_matches": {"items": [dict(item) if isinstance(item, dict) else item for item in (answer.get("best_matches", []) or [])], "mode": "strict", "label": answer.get("bucket_titles", {}).get("best_matches", "Best matches"), "subtitle": None, "empty_reason": None},
+            "weirdest_matches": {"items": [dict(item) if isinstance(item, dict) else item for item in (answer.get("weirdest_matches", []) or [])], "mode": "strict", "label": answer.get("bucket_titles", {}).get("weirdest_matches", "Weirder picks"), "subtitle": None, "empty_reason": answer.get("bucket_empty_reasons", {}).get("weirdest_matches")},
+            "emotionally_heavier_matches": {"items": [dict(item) if isinstance(item, dict) else item for item in (answer.get("emotionally_heavier_matches", []) or [])], "mode": "strict", "label": answer.get("bucket_titles", {}).get("emotionally_heavier_matches", "Emotionally heavier"), "subtitle": None, "empty_reason": answer.get("bucket_empty_reasons", {}).get("emotionally_heavier_matches")},
+            "safer_easier_watches": {"items": [dict(item) if isinstance(item, dict) else item for item in (answer.get("safer_easier_watches", []) or [])], "mode": "strict", "label": answer.get("bucket_titles", {}).get("safer_easier_watches", "Safer / easier"), "subtitle": None, "empty_reason": answer.get("bucket_empty_reasons", {}).get("safer_easier_watches")},
+            "bridge_titles": {"items": [dict(item) if isinstance(item, dict) else item for item in (answer.get("bridge_titles", []) or [])], "mode": "strict", "label": answer.get("bucket_titles", {}).get("bridge_titles", "Bridge titles"), "subtitle": None, "empty_reason": answer.get("bucket_empty_reasons", {}).get("bridge_titles")},
+        }
     return answer
 
 
 def cache_key_for(mode: str, normalized: str, selected_title_id: Optional[int], intent: Optional[str] = None) -> str:
     return f"v{ASK_CACHE_SCHEMA_VERSION}:{mode}:title={selected_title_id or 'none'}:intent={(intent or 'auto')}:{normalized}"
+
+
+def explain_cache_key_for(
+    normalized: str,
+    selected_title_id: Optional[int],
+    intent: Optional[str],
+    top_match_ids: list[int],
+) -> str:
+    top_fragment = ",".join(str(item) for item in top_match_ids[:6]) or "none"
+    return f"explain:v{ASK_EXPLAIN_CACHE_VERSION}:title={selected_title_id or 'none'}:intent={(intent or 'auto')}:{top_fragment}:{normalized}"
 
 
 def current_graph_version() -> str:
@@ -457,6 +568,98 @@ def build_focused_context(
     )
 
 
+def build_ai_explain_context(
+    question: str,
+    fast_answer: Optional[dict] = None,
+    selected_title_id: Optional[int] = None,
+    deterministic_answer: Optional[dict] = None,
+    intent: Optional[str] = None,
+) -> str:
+    focus = title_by_id(selected_title_id) if selected_title_id else matched_title_from_question(question)
+    focus_profile = fetch_title_profile(focus["id"]) if focus else None
+    bucket_titles = (fast_answer or {}).get("bucket_titles") or {}
+    bucket_empty_reasons = (fast_answer or {}).get("bucket_empty_reasons") or {}
+    lead_bucket_by_intent = {
+        "closest": "best_matches",
+        "similar": "best_matches",
+        "weirder": "weirdest_matches",
+        "heavier": "emotionally_heavier_matches",
+        "safer": "safer_easier_watches",
+        "why_connects": "bridge_titles",
+        "bridge": "bridge_titles",
+    }
+    lead_bucket = lead_bucket_by_intent.get(intent or "", "best_matches")
+
+    def summarize_match(item: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "title": item.get("title"),
+            "year": item.get("year"),
+            "cluster": item.get("cluster"),
+            "scores": item.get("scores") or {},
+            "edge_type": item.get("edge_type") or "strong",
+            "edge_score": item.get("confidence"),
+            "edge_reason": item.get("reason"),
+            "shared_traits": (item.get("shared_traits") or [])[:4],
+            "tags": (item.get("tags") or [])[:4],
+        }
+
+    bucket_names = []
+    for name in (lead_bucket, "best_matches", "bridge_titles"):
+        if name and name not in bucket_names:
+            bucket_names.append(name)
+    local_buckets = {}
+    for name in bucket_names:
+        items = [
+            summarize_match(item)
+            for item in ((fast_answer or {}).get(name) or [])[:3]
+            if isinstance(item, dict)
+        ]
+        local_buckets[name] = {
+            "title": bucket_titles.get(name),
+            "count": len(items),
+            "empty_reason": bucket_empty_reasons.get(name),
+            "items": items,
+        }
+
+    explanation_payload = {
+        "graph_type": "Plex taste graph",
+        "domain_rules": {
+            "nodes_are": "movies and TV titles from a Plex library",
+            "edges_are": "taste-similarity connections between titles",
+            "do_not_treat_as": "locations, routes, points of interest, or physical graph traversal",
+        },
+        "question": question,
+        "intent": intent,
+        "selected_title": compact_title_payload(focus_profile) if focus_profile else None,
+        "selected_title_detail": summarize_title_relationship_profile(focus_profile) if focus_profile else None,
+        "deterministic_graph_reasoning": ((deterministic_answer or {}).get("graph_reasoning") or "")[:900],
+        "local_graph_answer_summary": {
+            "recommendation": (fast_answer or {}).get("recommendation"),
+            "why_it_fits": (fast_answer or {}).get("why_it_fits"),
+            "why_these_fit": (fast_answer or {}).get("why_these_fit"),
+        },
+        "lead_bucket": {
+            "name": lead_bucket,
+            "title": bucket_titles.get(lead_bucket),
+            "empty_reason": bucket_empty_reasons.get(lead_bucket),
+        },
+        "local_buckets": local_buckets,
+        "top_match_titles": [
+            item.get("title")
+            for item in ((fast_answer or {}).get("best_matches") or [])[:3]
+            if isinstance(item, dict) and item.get("title")
+        ],
+        "explanation_instructions": [
+            "Explain only the already-returned local graph evidence.",
+            "If best matches or bridge titles exist, do not claim there are no edges or no graph context.",
+            "Use plain language for movie and TV taste, tone, themes, style, mood, and emotional pressure.",
+            "Mention uncertainty when a result is a bridge, soft, or looser same-neighborhood alternative.",
+            "Do not invent titles, tags, clusters, or connections.",
+        ],
+    }
+    return json.dumps(explanation_payload, ensure_ascii=False)
+
+
 def should_use_ai(
     question: str,
     explain_with_ai: bool,
@@ -558,7 +761,7 @@ def load_cluster_candidate_matches(
             SELECT t.id, t.title, t.year, t.type, t.source, t.primary_cluster,
                    p.tone_tags, p.theme_tags, p.style_tags, p.mood_tags,
                    p.weirdness_score, p.emotional_weight_score, p.intensity_score, p.pacing_score,
-                   p.johnny_core_score, p.ai_summary
+                   p.johnny_core_score, p.ai_summary, p.recommendation_hooks, p.closest_viewing_context
             FROM titles t
             JOIN taste_profiles p ON p.title_id = t.id
             WHERE t.id != ? AND t.enrichment_status = 'enriched' AND t.primary_cluster = ?
@@ -572,8 +775,11 @@ def load_cluster_candidate_matches(
         if profile["id"] in existing_ids:
             continue
         tags = []
-        for key in ("tone_tags", "theme_tags", "style_tags", "mood_tags"):
+        for key in ("tone_tags", "theme_tags", "style_tags", "mood_tags", "recommendation_hooks"):
             tags.extend(json_list(profile.get(key)))
+        context_terms = str(profile.get("closest_viewing_context") or "").strip()
+        if context_terms:
+            tags.extend([part.strip() for part in context_terms.replace(";", ",").split(",") if part.strip()])
         item = format_match(profile, tags)
         item["edge_type"] = "cluster_nearby"
         item["confidence"] = score_profile_similarity(focus_profile, profile)
@@ -588,6 +794,108 @@ def load_cluster_candidate_matches(
     return matches
 
 
+WEIRD_TERMS = {
+    "surreal", "dreamlike", "uncanny", "psychological", "abstract", "fragmented identity",
+    "identity fracture", "existential", "hallucinatory", "nonlinear", "absurd", "experimental",
+    "dissociative", "paranoid", "strange", "off-center", "haunting",
+}
+
+HEAVY_TERMS = {
+    "grief", "trauma", "dread", "moral rot", "collapse", "despair", "bleak", "devastating",
+    "brutal", "war", "guilt", "psychological pressure", "emotional devastation", "alienation",
+    "obsession", "loss", "violence", "institutional decay",
+}
+
+LIGHTER_TERMS = {
+    "playful", "funny", "warm", "whimsical", "adventure", "charming", "nostalgic", "romantic",
+    "lighter", "comedic", "crowd-pleasing",
+}
+
+
+def item_text_blob(item: dict[str, Any]) -> str:
+    bits: list[str] = []
+    bits.extend(str(tag) for tag in (item.get("tags") or []))
+    bits.extend(str(tag) for tag in (item.get("shared_traits") or []))
+    if item.get("reason"):
+        bits.append(str(item["reason"]))
+    if item.get("cluster"):
+        bits.append(str(item["cluster"]))
+    return " ".join(bit.lower() for bit in bits if bit)
+
+
+def count_terms(item: dict[str, Any], terms: set[str]) -> int:
+    blob = item_text_blob(item)
+    return sum(1 for term in terms if term in blob)
+
+
+def cluster_match_bonus(item: dict[str, Any], focus_cluster: Optional[str]) -> float:
+    return 0.35 if focus_cluster and item.get("cluster") == focus_cluster else 0.0
+
+
+def item_shared_count(item: dict[str, Any]) -> int:
+    return len(item.get("shared_traits") or [])
+
+
+def load_related_candidate_matches(
+    focus_profile: Optional[dict],
+    existing_ids: set[int],
+    limit: int = 24,
+) -> list[dict]:
+    if not focus_profile:
+        return []
+    focus_terms = []
+    for key in ("tone_tags", "theme_tags", "style_tags", "mood_tags", "recommendation_hooks"):
+        focus_terms.extend(json_list(focus_profile.get(key)))
+    context_terms = str(focus_profile.get("closest_viewing_context") or "").strip()
+    if context_terms:
+        focus_terms.extend([part.strip() for part in context_terms.replace(";", ",").split(",") if part.strip()])
+    normalized_terms = {str(term).strip().lower() for term in focus_terms if str(term).strip()}
+    if not normalized_terms:
+        return []
+    with get_connection() as conn:
+        rows = conn.execute(
+            """
+            SELECT t.id, t.title, t.year, t.type, t.source, t.primary_cluster,
+                   p.tone_tags, p.theme_tags, p.style_tags, p.mood_tags,
+                   p.weirdness_score, p.emotional_weight_score, p.intensity_score, p.pacing_score,
+                   p.johnny_core_score, p.ai_summary, p.recommendation_hooks, p.closest_viewing_context
+            FROM titles t
+            JOIN taste_profiles p ON p.title_id = t.id
+            WHERE t.id != ? AND t.enrichment_status = 'enriched'
+            ORDER BY p.johnny_core_score DESC, p.weirdness_score DESC
+            LIMIT 400
+            """,
+            (focus_profile["id"],),
+        ).fetchall()
+    matches = []
+    for profile in apply_resolved_clusters(rows):
+        if profile["id"] in existing_ids:
+            continue
+        tags = []
+        for key in ("tone_tags", "theme_tags", "style_tags", "mood_tags", "recommendation_hooks"):
+            tags.extend(json_list(profile.get(key)))
+        context_value = str(profile.get("closest_viewing_context") or "").strip()
+        if context_value:
+            tags.extend([part.strip() for part in context_value.replace(";", ",").split(",") if part.strip()])
+        lowered_tags = {str(tag).strip().lower() for tag in tags if str(tag).strip()}
+        overlap = [tag for tag in tags if str(tag).strip().lower() in normalized_terms]
+        if not overlap and profile.get("primary_cluster") != focus_profile.get("primary_cluster"):
+            continue
+        item = format_match(profile, tags)
+        item["edge_type"] = "related_fallback"
+        item["confidence"] = score_profile_similarity(focus_profile, profile)
+        item["shared_traits"] = overlap[:6] or shared_profile_terms(focus_profile, profile)
+        item["reason"] = (
+            f"Shared neighborhood alternative via {' / '.join(item['shared_traits'][:3])}."
+            if item["shared_traits"]
+            else f"Same-cluster alternative in {profile.get('primary_cluster') or 'a nearby neighborhood'}."
+        )
+        item["rank_score"] = item["confidence"] + min(len(item["shared_traits"]) * 0.12, 0.48)
+        matches.append(item)
+    matches.sort(key=lambda item: item.get("rank_score") or 0, reverse=True)
+    return take_unique_matches(matches, limit=limit)
+
+
 def score_profile_similarity(focus: dict, neighbor: dict) -> float:
     score = 0.0
     for key in ("weirdness_score", "emotional_weight_score", "johnny_core_score", "pacing_score", "intensity_score"):
@@ -600,9 +908,11 @@ def score_profile_similarity(focus: dict, neighbor: dict) -> float:
 def shared_profile_terms(focus: dict, neighbor: dict, limit: int = 5) -> list[str]:
     left = []
     right = []
-    for key in ("tone_tags", "theme_tags", "style_tags", "mood_tags"):
+    for key in ("tone_tags", "theme_tags", "style_tags", "mood_tags", "recommendation_hooks"):
         left.extend(json_list(focus.get(key)))
         right.extend(json_list(neighbor.get(key)))
+    left.extend([part.strip() for part in str(focus.get("closest_viewing_context") or "").replace(";", ",").split(",") if part.strip()])
+    right.extend([part.strip() for part in str(neighbor.get("closest_viewing_context") or "").replace(";", ",").split(",") if part.strip()])
     overlap = []
     right_set = {str(item).strip().lower(): str(item).strip() for item in right if str(item).strip()}
     for item in left:
@@ -642,6 +952,7 @@ def build_ask_recommendation_buckets(selected_title_id: int) -> Optional[dict]:
         matches.append(item)
     matches.sort(key=lambda item: item["rank_score"], reverse=True)
     cluster_fallback = load_cluster_candidate_matches(focus_profile, existing_ids)
+    related_fallback = load_related_candidate_matches(focus_profile, existing_ids)
 
     def unique_extend(primary: list[dict], extra: list[dict], limit: int) -> list[dict]:
         used: set[int] = set()
@@ -656,6 +967,44 @@ def build_ask_recommendation_buckets(selected_title_id: int) -> Optional[dict]:
     focus_cluster = focus_profile.get("primary_cluster")
 
     best_matches = take_unique_matches(matches, limit=8)
+    best_match_ids = {item.get("id") for item in best_matches if item.get("id")}
+
+    def prune_duplicates(items: list[dict]) -> list[dict]:
+        return [item for item in items if item.get("id") not in best_match_ids]
+
+    def allow_best_reuse(items: list[dict], limit: int = 5) -> list[dict]:
+        return take_unique_matches(items, limit=limit)
+
+    def weird_sort_key(item: dict[str, Any]) -> tuple[float, float, float, float]:
+        weirdness = int(item["scores"].get("weirdness") or 0)
+        intensity = int(item["scores"].get("intensity") or 0)
+        return (
+            weirdness,
+            count_terms(item, WEIRD_TERMS),
+            item_shared_count(item),
+            float(item.get("rank_score") or 0) + cluster_match_bonus(item, focus_cluster),
+        )
+
+    def heavy_sort_key(item: dict[str, Any]) -> tuple[float, float, float, float]:
+        emotion = int(item["scores"].get("emotional_weight") or 0)
+        intensity = int(item["scores"].get("intensity") or 0)
+        return (
+            emotion,
+            count_terms(item, HEAVY_TERMS) + max(intensity - base_intensity, 0),
+            item_shared_count(item),
+            float(item.get("rank_score") or 0) + cluster_match_bonus(item, focus_cluster),
+        )
+
+    def safe_sort_key(item: dict[str, Any]) -> tuple[float, float, float, float]:
+        emotion = int(item["scores"].get("emotional_weight") or 0)
+        weirdness = int(item["scores"].get("weirdness") or 0)
+        intensity = int(item["scores"].get("intensity") or 0)
+        return (
+            -(count_terms(item, LIGHTER_TERMS) + max(base_emotion - emotion, 0) + max(base_weird - weirdness, 0)),
+            intensity,
+            -item_shared_count(item),
+            -(float(item.get("rank_score") or 0) + cluster_match_bonus(item, focus_cluster)),
+        )
     weird_primary = sorted(
         [item for item in matches if int(item["scores"].get("weirdness") or 0) > base_weird],
         key=lambda item: ((int(item["scores"].get("weirdness") or 0) - base_weird), item.get("rank_score") or 0),
@@ -688,15 +1037,52 @@ def build_ask_recommendation_buckets(selected_title_id: int) -> Optional[dict]:
         key=lambda item: item.get("rank_score") or 0,
         reverse=True,
     )
+    weird_equal_primary = sorted(
+        [
+            item for item in matches
+            if int(item["scores"].get("weirdness") or 0) == base_weird
+            and int(item["scores"].get("intensity") or 0) > base_intensity
+        ],
+        key=lambda item: ((int(item["scores"].get("intensity") or 0) - base_intensity), item.get("rank_score") or 0),
+        reverse=True,
+    )
+    heavier_equal_primary = sorted(
+        [
+            item for item in matches
+            if int(item["scores"].get("emotional_weight") or 0) == base_emotion
+            and (
+                int(item["scores"].get("weirdness") or 0) > base_weird
+                or int(item["scores"].get("intensity") or 0) > base_intensity
+            )
+        ],
+        key=lambda item: (
+            max(int(item["scores"].get("weirdness") or 0) - base_weird, 0)
+            + max(int(item["scores"].get("intensity") or 0) - base_intensity, 0),
+            item.get("rank_score") or 0,
+        ),
+        reverse=True,
+    )
+    safer_equal_primary = sorted(
+        [
+            item for item in matches
+            if int(item["scores"].get("emotional_weight") or 0) == base_emotion
+            and int(item["scores"].get("weirdness") or 0) == base_weird
+            and int(item["scores"].get("intensity") or 0) < base_intensity
+        ],
+        key=lambda item: (
+            int(item["scores"].get("intensity") or 0),
+            -float(item.get("rank_score") or 0),
+        ),
+    )
 
     weird_fallback = sorted(
         [item for item in cluster_fallback if int(item["scores"].get("weirdness") or 0) > base_weird],
-        key=lambda item: ((int(item["scores"].get("weirdness") or 0) - base_weird), item.get("rank_score") or 0),
+        key=weird_sort_key,
         reverse=True,
     )
     heavier_fallback = sorted(
         [item for item in cluster_fallback if int(item["scores"].get("emotional_weight") or 0) > base_emotion],
-        key=lambda item: ((int(item["scores"].get("emotional_weight") or 0) - base_emotion), item.get("rank_score") or 0),
+        key=heavy_sort_key,
         reverse=True,
     )
     safer_fallback = sorted(
@@ -706,32 +1092,229 @@ def build_ask_recommendation_buckets(selected_title_id: int) -> Optional[dict]:
             or int(item["scores"].get("weirdness") or 0) < base_weird
             or int(item["scores"].get("intensity") or 0) < base_intensity
         ],
+        key=safe_sort_key,
+    )
+    weird_equal_fallback = sorted(
+        [
+            item for item in cluster_fallback
+            if int(item["scores"].get("weirdness") or 0) == base_weird
+            and int(item["scores"].get("intensity") or 0) > base_intensity
+        ],
+        key=lambda item: ((int(item["scores"].get("intensity") or 0) - base_intensity), item.get("rank_score") or 0),
+        reverse=True,
+    )
+    heavier_equal_fallback = sorted(
+        [
+            item for item in cluster_fallback
+            if int(item["scores"].get("emotional_weight") or 0) == base_emotion
+            and (
+                int(item["scores"].get("weirdness") or 0) > base_weird
+                or int(item["scores"].get("intensity") or 0) > base_intensity
+            )
+        ],
         key=lambda item: (
-            int(item["scores"].get("emotional_weight") or 0),
-            int(item["scores"].get("weirdness") or 0),
+            max(int(item["scores"].get("weirdness") or 0) - base_weird, 0)
+            + max(int(item["scores"].get("intensity") or 0) - base_intensity, 0),
+            item.get("rank_score") or 0,
+        ),
+        reverse=True,
+    )
+    safer_equal_fallback = sorted(
+        [
+            item for item in cluster_fallback
+            if int(item["scores"].get("emotional_weight") or 0) == base_emotion
+            and int(item["scores"].get("weirdness") or 0) == base_weird
+            and int(item["scores"].get("intensity") or 0) < base_intensity
+        ],
+        key=lambda item: (
             int(item["scores"].get("intensity") or 0),
             -float(item.get("rank_score") or 0),
         ),
     )
 
+    weird_adjacent_primary = sorted(
+        [
+            item for item in matches
+            if int(item["scores"].get("weirdness") or 0) >= max(base_weird - 1, 0)
+            and count_terms(item, WEIRD_TERMS) > 0
+        ],
+        key=weird_sort_key,
+        reverse=True,
+    )
+    weird_adjacent_fallback = sorted(
+        [
+            item for item in related_fallback
+            if int(item["scores"].get("weirdness") or 0) >= max(base_weird - 1, 0)
+            and count_terms(item, WEIRD_TERMS) > 0
+        ],
+        key=weird_sort_key,
+        reverse=True,
+    )
+    heavy_adjacent_primary = sorted(
+        [
+            item for item in matches
+            if int(item["scores"].get("emotional_weight") or 0) >= max(base_emotion - 1, 0)
+            and count_terms(item, HEAVY_TERMS) > 0
+        ],
+        key=heavy_sort_key,
+        reverse=True,
+    )
+    heavy_adjacent_fallback = sorted(
+        [
+            item for item in related_fallback
+            if int(item["scores"].get("emotional_weight") or 0) >= max(base_emotion - 1, 0)
+            and count_terms(item, HEAVY_TERMS) > 0
+        ],
+        key=heavy_sort_key,
+        reverse=True,
+    )
+    safe_adjacent_primary = sorted(
+        [
+            item for item in matches
+            if count_terms(item, LIGHTER_TERMS) > 0
+            or int(item["scores"].get("emotional_weight") or 0) <= base_emotion
+            or int(item["scores"].get("weirdness") or 0) <= base_weird
+        ],
+        key=safe_sort_key,
+    )
+    safe_adjacent_fallback = sorted(
+        [
+            item for item in related_fallback
+            if count_terms(item, LIGHTER_TERMS) > 0
+            or int(item["scores"].get("emotional_weight") or 0) <= base_emotion
+            or int(item["scores"].get("weirdness") or 0) <= base_weird
+        ],
+        key=safe_sort_key,
+    )
+
+    weird_bucket_mode = "strict"
+    weird_bucket_title = "Weirder picks"
+    weird_bucket_subtitle = None
+    weird_bucket_items = prune_duplicates(unique_extend(weird_primary, weird_fallback, 5))
+    if not weird_bucket_items:
+        weird_bucket_items = prune_duplicates(unique_extend(weird_equal_primary, weird_equal_fallback, 5))
+        if weird_bucket_items:
+            weird_bucket_mode = "equal"
+            weird_bucket_title = "Equally weird nearby picks"
+            weird_bucket_subtitle = f"{focus_profile['title']} is already one of the weirder titles in this neighborhood, so these are similarly strange nearby matches."
+    if not weird_bucket_items:
+        weird_bucket_items = prune_duplicates(unique_extend(weird_adjacent_primary, weird_adjacent_fallback, 5))
+        if weird_bucket_items:
+            weird_bucket_mode = "fallback"
+            weird_bucket_title = f"Adjacent strange picks near {focus_profile['title']}"
+            weird_bucket_subtitle = f"{focus_profile['title']} is already near the weirdness ceiling, so these are adjacent strange picks rather than strictly weirder ones."
+    if not weird_bucket_items:
+        weird_bucket_items = allow_best_reuse(weird_equal_primary or weird_adjacent_primary or best_matches, 5)
+        if weird_bucket_items:
+            weird_bucket_mode = "equal"
+            weird_bucket_title = f"Adjacent strange picks near {focus_profile['title']}"
+            weird_bucket_subtitle = f"{focus_profile['title']} is already one of the stranger titles in this neighborhood, so these nearby matches are similarly off-center rather than strictly weirder."
+
+    heavier_bucket_mode = "strict"
+    heavier_bucket_title = "Emotionally heavier"
+    heavier_bucket_subtitle = None
+    heavier_bucket_items = prune_duplicates(unique_extend(heavier_primary, heavier_fallback, 5))
+    if not heavier_bucket_items:
+        heavier_bucket_items = prune_duplicates(unique_extend(heavier_equal_primary, heavier_equal_fallback, 5))
+        if heavier_bucket_items:
+            heavier_bucket_mode = "equal"
+            heavier_bucket_title = "Equally heavy nearby picks"
+            heavier_bucket_subtitle = f"{focus_profile['title']} is already emotionally heavy, so these are similarly intense nearby matches."
+    if not heavier_bucket_items:
+        heavier_bucket_items = prune_duplicates(unique_extend(heavy_adjacent_primary, heavy_adjacent_fallback, 5))
+        if heavier_bucket_items:
+            heavier_bucket_mode = "fallback"
+            heavier_bucket_title = f"Adjacent emotionally intense picks near {focus_profile['title']}"
+            heavier_bucket_subtitle = f"{focus_profile['title']} is already near the emotional ceiling, so these are adjacent intense picks rather than strictly heavier ones."
+    if not heavier_bucket_items:
+        heavier_bucket_items = allow_best_reuse(heavier_equal_primary or heavy_adjacent_primary or best_matches, 5)
+        if heavier_bucket_items:
+            heavier_bucket_mode = "equal"
+            heavier_bucket_title = f"Adjacent emotionally intense picks near {focus_profile['title']}"
+            heavier_bucket_subtitle = f"{focus_profile['title']} is already emotionally heavy, so these nearby matches are similarly intense rather than strictly heavier."
+
+    safer_bucket_mode = "strict"
+    safer_bucket_title = "Safer / easier"
+    safer_bucket_subtitle = None
+    safer_bucket_items = prune_duplicates(unique_extend(safer_primary, safer_fallback, 5))
+    if not safer_bucket_items:
+        safer_bucket_items = prune_duplicates(unique_extend(safer_equal_primary, safer_equal_fallback, 5))
+        if safer_bucket_items:
+            safer_bucket_mode = "equal"
+            safer_bucket_title = "Lighter nearby picks"
+            safer_bucket_subtitle = f"These sit at a similar score level but read lighter or less punishing than {focus_profile['title']}."
+    if not safer_bucket_items:
+        safer_bucket_items = prune_duplicates(unique_extend(safe_adjacent_primary, safe_adjacent_fallback, 5))
+        if safer_bucket_items:
+            safer_bucket_mode = "fallback"
+            safer_bucket_title = "Safer adjacent picks"
+            safer_bucket_subtitle = f"No clearly lighter graph-neighbor surfaced, so these are lower-pressure nearby alternatives."
+    if not safer_bucket_items:
+        safer_bucket_items = allow_best_reuse(safe_adjacent_primary or safer_equal_primary or best_matches, 5)
+        if safer_bucket_items:
+            safer_bucket_mode = "fallback"
+            safer_bucket_title = "Lighter nearby picks"
+            safer_bucket_subtitle = f"No clearly safer graph-neighbor surfaced, so these are the closest nearby matches with the gentlest available pressure profile."
+
+    bridge_items = prune_duplicates(take_unique_matches(bridge_primary, limit=5))
+
+    sections = {
+        "best_matches": {
+            "items": best_matches,
+            "mode": "strict" if best_matches else "empty",
+            "label": "Best matches",
+            "subtitle": None,
+            "empty_reason": "No strong recommendation set yet.",
+        },
+        "weirdest_matches": {
+            "items": weird_bucket_items,
+            "mode": weird_bucket_mode if weird_bucket_items else "empty",
+            "label": weird_bucket_title,
+            "subtitle": weird_bucket_subtitle,
+            "empty_reason": "This title is already near the current weirdness ceiling for its neighborhood." if not weird_bucket_items else None,
+        },
+        "emotionally_heavier_matches": {
+            "items": heavier_bucket_items,
+            "mode": heavier_bucket_mode if heavier_bucket_items else "empty",
+            "label": heavier_bucket_title,
+            "subtitle": heavier_bucket_subtitle,
+            "empty_reason": "This title is already near the current emotional ceiling for its neighborhood." if not heavier_bucket_items else None,
+        },
+        "safer_easier_watches": {
+            "items": safer_bucket_items,
+            "mode": safer_bucket_mode if safer_bucket_items else "empty",
+            "label": safer_bucket_title,
+            "subtitle": safer_bucket_subtitle,
+            "empty_reason": "This neighborhood is uniformly intense, so no safer nearby picks surfaced." if not safer_bucket_items else None,
+        },
+        "bridge_titles": {
+            "items": bridge_items,
+            "mode": "strict" if bridge_items else "empty",
+            "label": "Bridge titles",
+            "subtitle": None,
+            "empty_reason": "No bridge-style or cross-cluster neighbors surfaced from the current graph." if not bridge_items else None,
+        },
+    }
+
     buckets = {
         "focus_profile": focus_profile,
         "neighbor_data": neighbor_data,
         "all_matches": matches,
-        "best_matches": best_matches,
-        "weirdest_matches": unique_extend(weird_primary, weird_fallback, 4),
-        "emotionally_heavier_matches": unique_extend(heavier_primary, heavier_fallback, 4),
-        "safer_easier_watches": unique_extend(safer_primary, safer_fallback, 4),
-        "bridge_titles": take_unique_matches(bridge_primary, limit=4),
+        "best_matches": sections["best_matches"]["items"],
+        "weirdest_matches": sections["weirdest_matches"]["items"],
+        "emotionally_heavier_matches": sections["emotionally_heavier_matches"]["items"],
+        "safer_easier_watches": sections["safer_easier_watches"]["items"],
+        "bridge_titles": sections["bridge_titles"]["items"],
+        "sections": sections,
+        "bucket_titles": {
+            key: value["label"] for key, value in sections.items()
+        },
         "bucket_empty_reasons": {
-            "weirdest_matches": None if weird_primary or weird_fallback else "No nearby titles are meaningfully weirder than this one yet.",
-            "emotionally_heavier_matches": None if heavier_primary or heavier_fallback else "No nearby titles are meaningfully heavier than this one yet.",
-            "safer_easier_watches": None if safer_primary or safer_fallback else "No safer nearby picks surfaced from the current graph.",
-            "bridge_titles": None if bridge_primary else "No bridge-style or cross-cluster neighbors surfaced from the current graph.",
+            key: value["empty_reason"] for key, value in sections.items()
         },
     }
     logger.info(
-        "ask buckets selected_title_id=%s selected_title=%r selected_scores=%s total_neighbors=%s edge_type_counts=%s best_matches=%s weirder_picks=%s emotionally_heavier=%s safer_easier=%s bridge_titles=%s empty_reasons=%s",
+        "ask buckets selected_title_id=%s selected_title=%r selected_scores=%s total_neighbors=%s edge_type_counts=%s weird_strict=%s weird_equal=%s weird_fallback=%s weird_final=%s weird_mode=%s heavier_strict=%s heavier_equal=%s heavier_fallback=%s heavier_final=%s heavier_mode=%s safer_strict=%s safer_equal=%s safer_fallback=%s safer_final=%s safer_mode=%s bridge_final=%s",
         selected_title_id,
         focus_profile.get("title"),
         {
@@ -742,12 +1325,22 @@ def build_ask_recommendation_buckets(selected_title_id: int) -> Optional[dict]:
         },
         len(matches),
         neighbor_data.get("edge_type_counts"),
-        len(buckets["best_matches"]),
+        len(weird_primary),
+        len(weird_equal_primary),
+        len(weird_adjacent_primary) + len(weird_adjacent_fallback),
         len(buckets["weirdest_matches"]),
+        sections["weirdest_matches"]["mode"],
+        len(heavier_primary),
+        len(heavier_equal_primary),
+        len(heavy_adjacent_primary) + len(heavy_adjacent_fallback),
         len(buckets["emotionally_heavier_matches"]),
+        sections["emotionally_heavier_matches"]["mode"],
+        len(safer_primary),
+        len(safer_equal_primary),
+        len(safe_adjacent_primary) + len(safe_adjacent_fallback),
         len(buckets["safer_easier_watches"]),
+        sections["safer_easier_watches"]["mode"],
         len(buckets["bridge_titles"]),
-        {k: v for k, v in buckets["bucket_empty_reasons"].items() if v},
     )
     return buckets
 
@@ -790,6 +1383,7 @@ def similarity_fast_answer(question: str, selected_title_id: Optional[int] = Non
             "answer_source": "local_graph",
             "intent": resolved_intent,
             "bucket_empty_reasons": buckets["bucket_empty_reasons"],
+            "bucket_titles": buckets.get("bucket_titles", {}),
         }
 
     question_lower = normalize_question(question)
@@ -801,20 +1395,32 @@ def similarity_fast_answer(question: str, selected_title_id: Optional[int] = Non
         )
     recommendation = f"Closest to {focus['title']}: {best_matches[0]['title']}."
     if resolved_intent == "weirder":
-        if buckets["weirdest_matches"]:
+        weird_mode = buckets["sections"]["weirdest_matches"]["mode"]
+        weird_label = buckets["sections"]["weirdest_matches"]["label"]
+        if buckets["weirdest_matches"] and weird_mode == "strict":
             recommendation = f"Weirder than {focus['title']}: {buckets['weirdest_matches'][0]['title']}."
+        elif buckets["weirdest_matches"]:
+            recommendation = f"{weird_label}: {buckets['weirdest_matches'][0]['title']}."
         else:
-            recommendation = f"No weirder nearby matches for {focus['title']} yet."
+            recommendation = f"{focus['title']} is already near the weirdness ceiling for its neighborhood."
     elif resolved_intent == "heavier":
-        if buckets["emotionally_heavier_matches"]:
+        heavier_mode = buckets["sections"]["emotionally_heavier_matches"]["mode"]
+        heavier_label = buckets["sections"]["emotionally_heavier_matches"]["label"]
+        if buckets["emotionally_heavier_matches"] and heavier_mode == "strict":
             recommendation = f"Heavier than {focus['title']}: {buckets['emotionally_heavier_matches'][0]['title']}."
+        elif buckets["emotionally_heavier_matches"]:
+            recommendation = f"{heavier_label}: {buckets['emotionally_heavier_matches'][0]['title']}."
         else:
-            recommendation = f"No heavier nearby matches for {focus['title']} yet."
+            recommendation = f"{focus['title']} is already near the emotional ceiling for its neighborhood."
     elif resolved_intent == "safer":
-        if buckets["safer_easier_watches"]:
+        safer_mode = buckets["sections"]["safer_easier_watches"]["mode"]
+        safer_label = buckets["sections"]["safer_easier_watches"]["label"]
+        if buckets["safer_easier_watches"] and safer_mode == "strict":
             recommendation = f"Safer near {focus['title']}: {buckets['safer_easier_watches'][0]['title']}."
+        elif buckets["safer_easier_watches"]:
+            recommendation = f"{safer_label}: {buckets['safer_easier_watches'][0]['title']}."
         else:
-            recommendation = f"No easier nearby matches for {focus['title']} yet."
+            recommendation = f"{focus['title']}'s neighborhood is uniformly intense."
     elif resolved_intent == "similar":
         recommendation = f"Similar to {focus['title']}: {best_matches[0]['title']}."
     elif resolved_intent == "why_connects" or ("why" in question_lower and "connect" in question_lower):
@@ -830,7 +1436,9 @@ def similarity_fast_answer(question: str, selected_title_id: Optional[int] = Non
         "emotionally_heavier_matches": buckets["emotionally_heavier_matches"],
         "safer_easier_watches": buckets["safer_easier_watches"],
         "bridge_titles": buckets["bridge_titles"],
+        "sections": buckets["sections"],
         "bucket_empty_reasons": buckets["bucket_empty_reasons"],
+        "bucket_titles": buckets.get("bucket_titles", {}),
         "why_these_fit": "Returned instantly from stored graph connections. Strong matches lead, and nearby alternatives widen the bucket when the graph needs context.",
         "tags_driving_recommendation": best_matches[0].get("shared_traits", [])[:6],
         "matched_title": focus_profile["title"] if focus_profile else focus["title"],
@@ -948,7 +1556,8 @@ def fetch_title_profile(title_id: int) -> Optional[dict]:
             SELECT t.id, t.title, t.year, t.type, t.source, t.primary_cluster,
                    p.tone_tags, p.theme_tags, p.style_tags, p.mood_tags,
                    p.weirdness_score, p.emotional_weight_score, p.intensity_score,
-                   p.pacing_score, p.johnny_core_score, p.ai_summary
+                   p.pacing_score, p.johnny_core_score, p.ai_summary,
+                   p.recommendation_hooks, p.closest_viewing_context
             FROM titles t
             LEFT JOIN taste_profiles p ON p.title_id = t.id
             WHERE t.id = ?
@@ -1334,4 +1943,52 @@ def compact_title_payload(row: Optional[dict]) -> Optional[dict]:
             "johnny_core": row.get("johnny_core_score"),
         },
         "summary": row.get("ai_summary"),
+    }
+
+
+def detailed_title_payload(row: Optional[dict]) -> Optional[dict]:
+    if not row:
+        return None
+    return {
+        "title": row["title"],
+        "year": row["year"],
+        "type": row["type"],
+        "source": row["source"],
+        "cluster": row.get("primary_cluster") or "Mixed / Transitional",
+        "scores": {
+            "johnny_core": row.get("johnny_core_score"),
+            "weirdness": row.get("weirdness_score"),
+            "emotional_weight": row.get("emotional_weight_score"),
+            "intensity": row.get("intensity_score"),
+            "pacing": row.get("pacing_score"),
+        },
+        "tone_tags": json_list(row.get("tone_tags")),
+        "theme_tags": json_list(row.get("theme_tags")),
+        "style_tags": json_list(row.get("style_tags")),
+        "mood_tags": json_list(row.get("mood_tags")),
+        "recommendation_hooks": json_list(row.get("recommendation_hooks")),
+        "closest_viewing_context": row.get("closest_viewing_context"),
+        "summary": row.get("ai_summary"),
+    }
+
+
+def summarize_title_relationship_profile(row: Optional[dict]) -> Optional[dict]:
+    if not row:
+        return None
+    return {
+        "title": row["title"],
+        "year": row["year"],
+        "cluster": row.get("primary_cluster") or "Mixed / Transitional",
+        "scores": {
+            "johnny_core": row.get("johnny_core_score"),
+            "weirdness": row.get("weirdness_score"),
+            "emotional_weight": row.get("emotional_weight_score"),
+            "intensity": row.get("intensity_score"),
+        },
+        "tone_tags": json_list(row.get("tone_tags"))[:4],
+        "theme_tags": json_list(row.get("theme_tags"))[:4],
+        "style_tags": json_list(row.get("style_tags"))[:4],
+        "mood_tags": json_list(row.get("mood_tags"))[:4],
+        "recommendation_hooks": json_list(row.get("recommendation_hooks"))[:4],
+        "closest_viewing_context": row.get("closest_viewing_context"),
     }

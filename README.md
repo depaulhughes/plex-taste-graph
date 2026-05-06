@@ -245,11 +245,19 @@ Taste Graph is set up for Docker Compose / Synology Container Manager Projects s
 Why this shape works well on DSM:
 
 - the container runs FastAPI/Uvicorn on `0.0.0.0:8000`
-- host port is configurable with `APP_PORT`
+- Synology host port is hardcoded to `32403` in `docker-compose.yml`
 - SQLite lives under `/app/data` inside the container
-- `./data` is mounted from the host, so the database survives rebuilds
+- `/volume1/docker/taste-graph/data` is mounted from the host, so the database survives rebuilds
 - secrets stay in `.env`
 - the same compose project can be rebuilt and restarted cleanly from Container Manager
+
+Your Plex Assistant already uses NAS port `8000`, so Taste Graph should use a different host port. The recommended default here is:
+
+```text
+http://100.121.121.55:32403/
+```
+
+If you want a different NAS port later, edit the `ports` line in `docker-compose.yml`.
 
 ### Local Docker build/test
 
@@ -271,7 +279,7 @@ docker compose up
 Open:
 
 ```bash
-http://127.0.0.1:8001
+http://localhost:32403
 ```
 
 ### Detached
@@ -317,13 +325,22 @@ Persistent data:
 ### Container Manager Project steps
 
 1. Upload or clone this repo into `/volume1/docker/taste-graph`
+   - The folder must include at least:
+     - `app/taste_engine.py`
+     - `app/graph_builder.py`
+     - `app/graph_neighbors.py`
+     - `app/routes/`
+     - `app/templates/`
+     - `app/static/`
+     - `scripts/`
 2. Copy `.env.example` to `.env`
 3. Fill in:
-   - `APP_PORT`
+   - `OPENAI_MODEL`
    - `PLEX_BASE_URL`
    - `PLEX_TOKEN`
    - `OPENAI_API_KEY`
    - optionally `OPENAI_MODEL`
+   - optionally `TASTE_GRAPH_DB_PATH` (default container path: `/app/data/taste_graph.sqlite`)
 4. Open Synology Container Manager
 5. Create a new Project
 6. Point it at the folder containing `docker-compose.yml`
@@ -331,17 +348,54 @@ Persistent data:
 8. Open:
 
 ```text
-http://NAS_IP:8001
+http://100.121.121.55:32403/
 ```
 
 ### Docker details
 
 - container port: `8000`
-- host port: `${APP_PORT:-8001}`
-- persistent SQLite path in container: `/app/data/taste_graph.db`
+- host port: `32403`
+- persistent SQLite path in container: `/app/data/taste_graph.sqlite`
 - health endpoint: `/health`
+- OpenAI debug endpoint: `/api/debug/openai`
+
+Health check example on the NAS/Tailscale address:
+
+```text
+http://100.121.121.55:32403/health
+```
 
 The frontend uses relative paths like `/api/graph` and `/api/ask`, so it works cleanly behind Docker port mappings and reverse proxies without hardcoded localhost URLs.
+
+The Docker build now performs an import preflight:
+
+- `import app.main`
+- `import app.taste_engine`
+
+So if the NAS project folder is missing a required app module, the image build will fail early instead of the container crashing on startup.
+
+### Synology permissions
+
+Current compose does not expose `PUID` / `PGID` environment variables. The container runs with the image default user.
+
+That is usually fine in Synology Container Manager if the bind-mounted folder is writable, but if you hit permission errors on `/app/data`, fix the host folder ownership or permissions over SSH first.
+
+Recommended layout:
+
+```text
+/volume1/docker/taste-graph
+/volume1/docker/taste-graph/data
+/volume1/docker/taste-graph/.env
+/volume1/docker/taste-graph/docker-compose.yml
+```
+
+Example ownership command if you want to align the folder with a DSM user:
+
+```bash
+sudo chown -R 1026:100 /volume1/docker/taste-graph
+```
+
+Replace `1026:100` with your actual DSM user/group ids if they differ.
 
 ### Running scripts inside Docker
 
@@ -352,6 +406,8 @@ docker compose exec taste-graph python3 scripts/sync_plex.py --library "Movies" 
 docker compose exec taste-graph python3 scripts/enrich_titles.py --source plex --only-pending --limit 100
 docker compose exec taste-graph python3 scripts/build_edges.py
 docker compose exec taste-graph python3 scripts/health_check.py
+docker compose exec taste-graph python3 scripts/check_openai.py
+docker compose exec taste-graph bash
 ```
 
 ## JSON Endpoints

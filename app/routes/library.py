@@ -70,6 +70,11 @@ def api_title(title_id: int) -> dict:
     return title_payload(title_id)
 
 
+@router.get("/api/title-context/{title_id}")
+def api_title_context(title_id: int) -> dict:
+    return title_context_payload(title_id)
+
+
 def title_payload(title_id: int) -> dict:
     with get_connection() as conn:
         row = conn.execute(
@@ -104,6 +109,9 @@ def title_payload(title_id: int) -> dict:
     strong_edges = neighbor_data["strong_edges"]
     soft_edges = neighbor_data["soft_edges"]
     bridge_edges = neighbor_data["bridge_edges"]
+    primary_neighbor_edges, primary_neighbor_label, primary_neighbor_mode = select_primary_neighbor_edges(
+        edges, strong_edges
+    )
     secondary_edges = soft_edges + bridge_edges
     recommendations = build_title_recommendations(row, edges)
     why_it_lands_here = build_why_it_lands_here(row)
@@ -122,6 +130,9 @@ def title_payload(title_id: int) -> dict:
         "strong_edges": strong_edges,
         "soft_edges": soft_edges,
         "bridge_edges": bridge_edges,
+        "primary_neighbor_edges": primary_neighbor_edges,
+        "primary_neighbor_label": primary_neighbor_label,
+        "primary_neighbor_mode": primary_neighbor_mode,
         "secondary_edges": secondary_edges,
         "recommendations": recommendations,
         "why_it_lands_here": why_it_lands_here,
@@ -129,6 +140,79 @@ def title_payload(title_id: int) -> dict:
         "graph_insight": graph_insight,
         "metadata_quality": metadata_quality,
     }
+
+
+def title_context_payload(title_id: int) -> dict:
+    data = title_payload(title_id)
+    row = data["title"]
+    strong_edges = data["strong_edges"]
+    soft_edges = data["soft_edges"]
+    bridge_edges = data["bridge_edges"]
+    primary_neighbor_edges = data["primary_neighbor_edges"]
+    primary_neighbor_label = data["primary_neighbor_label"]
+    primary_neighbor_mode = data["primary_neighbor_mode"]
+    top_tags = row.get("display_tags") or build_display_tags(row)
+    ai_summary = (
+        row.get("ai_summary")
+        or build_why_it_lands_here(row)
+        or row.get("summary")
+        or ""
+    )
+
+    def edge_item(edge: dict) -> dict:
+        return {
+            "id": edge.get("nearby_id"),
+            "title": edge.get("nearby_title"),
+            "cluster": edge.get("nearby_cluster"),
+            "confidence": edge.get("confidence") or edge.get("weight"),
+            "edge_type": edge.get("edge_type") or "strong",
+            "reason": edge.get("explanation") or "",
+            "shared_traits": edge.get("shared_traits") or [],
+            "scores": {
+                "johnny_core": (edge.get("neighbor_profile") or {}).get("johnny_core_score"),
+                "weirdness": (edge.get("neighbor_profile") or {}).get("weirdness_score"),
+                "emotional_weight": (edge.get("neighbor_profile") or {}).get("emotional_weight_score"),
+            },
+        }
+
+    context = {
+        "title_id": row["id"],
+        "title": row["title"],
+        "year": row.get("year"),
+        "source": row.get("source"),
+        "enriched": row.get("enrichment_status") == "enriched",
+        "enrichment_status": row.get("enrichment_status"),
+        "cluster": row.get("primary_cluster"),
+        "summary": row.get("summary") or "",
+        "scores": {
+            "johnny_core": row.get("johnny_core_score"),
+            "weirdness": row.get("weirdness_score"),
+            "emotional_weight": row.get("emotional_weight_score"),
+        },
+        "top_tags": top_tags[:8],
+        "ai_summary": ai_summary,
+        "tone_tags": row.get("tone_tags") or [],
+        "theme_tags": row.get("theme_tags") or [],
+        "style_tags": row.get("style_tags") or [],
+        "mood_tags": row.get("mood_tags") or [],
+        "recommendation_hooks": row.get("recommendation_hooks") or [],
+        "closest_viewing_context": row.get("closest_viewing_context") or "",
+        "strong_matches": [edge_item(edge) for edge in strong_edges[:8]],
+        "primary_matches": [edge_item(edge) for edge in primary_neighbor_edges[:8]],
+        "primary_matches_label": primary_neighbor_label,
+        "primary_matches_mode": primary_neighbor_mode,
+        "soft_matches": [edge_item(edge) for edge in soft_edges[:6]],
+        "bridge_titles": [edge_item(edge) for edge in bridge_edges[:6]],
+    }
+    return context
+
+
+def select_primary_neighbor_edges(edges: list[dict], strong_edges: list[dict]) -> tuple[list[dict], str, str]:
+    if strong_edges:
+        return strong_edges[:8], "Strong matches", "strong"
+    if edges:
+        return edges[:8], "Closest graph neighbors", "fallback"
+    return [], "Strong matches", "empty"
 
 
 def build_display_tags(row: dict) -> list[str]:

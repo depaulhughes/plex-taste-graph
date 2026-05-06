@@ -30,6 +30,20 @@ TASTE_TEMPLATES = [
     ("Surprise me", "Surprise me from this map"),
 ]
 
+SELECTED_TITLE_TEMPLATES = [
+    ("Closest to {title}", "Closest to {title}", "closest"),
+    ("Similar to {title}", "What is similar to {title}?", "similar"),
+    ("Best nearby matches for {title}", "Best nearby matches for {title}", "closest"),
+    ("Weirder than {title}", "Weirder than {title}", "weirder"),
+    ("Stranger near {title}", "Give me stranger nearby picks than {title}.", "weirder"),
+    ("Heavier than {title}", "Emotionally heavier than {title}", "heavier"),
+    ("More intense than {title}", "Give me more emotionally intense picks near {title}.", "heavier"),
+    ("Safer near {title}", "Safer picks near {title}", "safer"),
+    ("Lighter near {title}", "Give me lighter nearby picks than {title}.", "safer"),
+    ("Why {title} connects", "Why does {title} connect to these?", "why_connects"),
+    ("Bridge picks for {title}", "Show me bridge titles near {title}.", "bridge"),
+]
+
 
 def suggested_asks() -> dict:
     titles = enriched_titles_with_edges(prefer_plex=True)
@@ -88,13 +102,20 @@ def selected_title_suggested_asks(selected_title_id: int) -> dict:
         return suggested_asks()
 
     title = row["title"]
-    suggestions = [
-        {"label": f"Closest to {title}", "question": f"Closest to {title}", "intent": "closest"},
-        {"label": f"Weirder than {title}", "question": f"Weirder than {title}", "intent": "weirder"},
-        {"label": f"Heavier than {title}", "question": f"Heavier than {title}", "intent": "heavier"},
-        {"label": f"Safer near {title}", "question": f"Safer picks near {title}", "intent": "safer"},
-        {"label": f"Why {title} connects", "question": f"Why does {title} connect to these?", "intent": "why_connects"},
-    ]
+    templates = SELECTED_TITLE_TEMPLATES[:]
+    random.shuffle(templates)
+    suggestions = []
+    seen: set[tuple[str, str, str]] = set()
+    for label_template, question_template, intent in templates:
+        label = label_template.format(title=title)
+        question = question_template.format(title=title)
+        key = (label, question, intent)
+        if key in seen:
+            continue
+        seen.add(key)
+        suggestions.append({"label": label, "question": question, "intent": intent})
+        if len(suggestions) >= 6:
+            break
     return {"suggestions": suggestions}
 
 
